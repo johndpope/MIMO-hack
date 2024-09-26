@@ -1,0 +1,1076 @@
+License: CC BY 4.0
+arXiv:2409.01502v1 [cs.CV] 02 Sep 2024
+AMG: Avatar Motion Guided Video Generation
+Zhangsihao Yang1, Mengyi Shan2
+Mohammad Farazi1, Wenhui Zhu1, Yanxi Chen1, Xuanzhao Dong1, Yalin Wang1
+Abstract
+Human video generation task has gained significant attention with the advancement of deep generative models. Generating realistic videos with human movements is challenging in nature, due to the intricacies of human body topology and sensitivity to visual artifacts. The extensively studied 2D media generation methods take advantage of massive human media datasets, but struggle with 3D-aware control; whereas 3D avatar-based approaches, while offering more freedom in control, lack photorealism and cannot be harmonized seamlessly with background scene. We propose AMG, a method that combines the 2D photorealism and 3D controllability by conditioning video diffusion models on controlled rendering of 3D avatars. We additionally introduce a novel data processing pipeline that reconstructs and renders human avatar movements from dynamic camera videos. AMG is the first method that enables multi-person diffusion video generation with precise control over camera positions, human motions, and background style. We also demonstrate through extensive evaluation that it outperforms existing human video generation methods conditioned on pose sequences or driving videos in terms of realism and adaptability.
+
+Code & Dataset — https://github.com/zshyang/amg
+
+Introduction
+Recent progresses in deep generative models have significantly advanced the progress of creative content generation, especially media including images and videos (Blattmann et al. 2023a). Among those advancements, generating controllable and photorealistic human videos emerges as a particularly interesting and challenging task, with broad potential application in fields including VR/AR, film and game industries. Compared with general open-domain text-to-video generation studies, human video generation is exceptionally hard due to human bodies’ special topological restrictions, and the high sensitivity to artifacts that can easily be perceived in the output.
+
+Refer to caption
+Figure 1: Our proposed method generates realistic human videos given a single text prompt. We enables diverse controls by explicitly incorporating the rendering of a 3D human avatar as conditional signal while fine-tuning a pre-trained video model. We specially achieves generation with (a) novel motion by generating control motion sequences with various text prompts, (b) free camera viewpoints by simulating camera movements while rendering, and (c) novel scene by describing background in the prompt.
+Current human content generation methods mainly develops in two separate streams depending on whether they are 2D or 3D in nature. The 2D methods takes advantage of tremendous scale human media datasets and universal pre-trained generative models. They fine-tune existing image or video models on a specific human dataset, with human pose sequences (Güler, Neverova, and Kokkinos 2018; Loper et al. 2015; Pavlakos et al. 2019) as control signals (Xu et al. 2024b; Hu et al. 2023; Zhu et al. 2024). On the other hand, the 3D methods (Liu et al. 2023b; Liao et al. 2024; Kolotouros et al. 2023; Huang et al. 2024; Hong et al. 2022a; Zhang et al. 2023) start by creating animatable human avatars with certain geometry and texture, and later on driving them with user-specified motions. Despite the remarkable progress, neither of these two lines of works satisfies the demands for precise controllability and true photorealism. 2D approaches struggles with full, 3D-aware controllability with dynamic camera positions, detailed 3D appearance information, and group interactive motions that often involves body occlusions. Specifically, skeletal signals like OpenPose (Hu et al. 2023; Wang et al. 2023b) struggle with handling occlusion, while semantic signals like DensePose (Xu et al. 2024b; Karras et al. 2023) face challenges in preserving identity. 3D approaches often emphasize computing lighting transitions between objects and scenes but lack methods to leverage the massive amount of photorealistic data contents. This limitation results in unnatural rendering or ignorance of the background, particularly in scenarios requiring realistic lighting, which in turn demands high computational resources.
+
+In this paper, we propose AMG, a method that merges merits from both 2D and 3D worlds. In particular, we introduce a technique that uses controlled 3D avatar rendering as a condition for video diffusion models. However, creating a dataset with paired 3D animatable human avatars and photorealistic videos is not a trivial task, as existing datasets lack such pairs. There are two approaches to address this challenge: either reconstruct a 3D human avatar from 2D video datasets or first render an albedo-like video and then refine the avatar with modern rendering techniques to achieve photorealism. We choose the first approach due to the abundance of 2D videos and the maturity of 3D human reconstruction from 2D videos. Given a human video in training data, we start by building an animatable 3D human avatar (Liu et al. 2023b) for identities occurring in the video with prompts generated from Vision Language Model (VLM) (Liu et al. 2023a) describing their appearance. We then extract 3D human body movements from the same video, use the pose sequences to drive the synthesized avatars, and simulate cameras to render synthetic videos of the human avatars. This synthetic rendering serves as the conditional signal when we fine-tune a text-to-video model our human video datasets. In particular, we employ our collected dataset of (video, prompt, avatar rendering), add additional condition by concatenating the frame with noise in latent space (Brooks, Holynski, and Efros 2023) and fine-tune the diffusion model ModelScopeT2V (Wang et al. 2023a) with LoRA (Hu et al. 2021).
+
+At inference time, we take a single text prompt as input and decompose it into human appearance and scene descriptions. we synthesize the human avatar (Liu et al. 2023b) based on the appearance description and then use off-the-shelf multi-person motion generation models (Liang et al. 2024; Shan et al. 2024) to generate driving signals for the avatars. The synthetic videos and scene descriptions are then used to condition our video diffusion model. Our model design enables a high-level of controllability that combines the strengths from both the powerful 2D pre-trained model, and the rich 3D information of human avatars. Figure 1 visualizes various applications of our method. Remarkable, our method is the first to achieve multi-person diffusion video generation, allowing for a high degree of controllability over multiple unexplored aspects such as camera positions, human 3D motions, and lighting adjustments to match the described scene.
+
+To summarize, our contributions are as follows: (a) We propose a training paradigm that takes advantage of both 2D pre-trained generative models and 3D animatable avatars, achieving high-level of realism as well as fine-grained controllability for human video generation. (b) We introduce a data collection pipeline that extracts 3D motion and camera information from 2D human videos, and render corresponding human avatar as conditions. We also plan to release the processed dataset. (c) We propose a video conditional parameter-efficient fine-tuning method for pre-trained text-to-video models. (d) We compare our method against multiple baselines and verify its effectiveness, robustness, and superiority in terms of both controllability and photorealism, as measured by CLIP score and motion accuracy.
+
+Related Work
+Text-to-Video Generation
+
+The text-to-video generation task aims to synthesize plausible, text-aligned, and temporally coherent video sequences given a prompt description. Early techniques including combining RNN and GANs (Yu et al. 2022; Skorokhodov, Tulyakov, and Elhoseiny 2021; Tulyakov et al. 2018), and Transformer-based autoregressive models (Yang et al. 2024b; Hong et al. 2022b; Yu et al. 2023). Recent progress in diffusion models greatly boosts the advancement in video generation (Xing et al. 2023; He et al. 2022). Early works like Video Diffusion Model (Ho et al. 2022b), ModelScopeT2V (Wang et al. 2023a), and VideoCrafter (Chen et al. 2023, 2024) start with the innovative idea of factorizing space and time to improve efficiency, and thus allow models to build upon existing Text-to-Image model. Video LDM (Blattmann et al. 2023b) and EMU video (Girdhar et al. 2024) learns to augment pre-trained U-Net structure image generation model with temporal layer and 3D convolution, and jointly train with videos and images. Imagen-Video (Ho et al. 2022a) learns a series of cascaded video diffusion models that starts with initial short and low-resolution video, and then extending to long high-resolution ones with spatial and temporal upsampling. More recent work explores the creative idea of replacing the U-Net structure with Transformer architecture (Gupta et al. 2023; Ma et al. 2024), inspired by the promising Text-to-Image generative results from DiT (Peebles and Xie 2022). Our work is built upon ModelScopeT2V (Wang et al. 2023a), and it can be seamlessly transferred to other Text-to-Video models.
+
+Controllable Video Generation
+Controllable video generation tasks leverages guidance from content control signals other than text. Example control modalities include semantic story layout (Gong et al. 2023; Long et al. 2024), sketches (Gal et al. 2023), optical flow (Yang et al. 2023; Hu and Xu 2023), and camera movements (Xu et al. 2024a; Yang et al. 2024a; He et al. 2024). (Guo et al. 2023) combines various control types above to train a universal control video generation model. One line of controllable video generation work studies the motion in a video. DragNUWA (Yin et al. 2023) enables high-level control with text, image and user-defined trajectory to control both object movements and camera path. Generative Image Dynamics (Li et al. 2024) models scene motion from a collection of motion trajectories extracted from real video sequences. DMT (Yatim et al. 2024) tackles the video translation task, using a pre-trained text-to-video diffusion model to transform video scenes according to text prompts while preserving the original motion. AnimateAnything (Dai et al. 2023) animates a reference image by designating an area of motion within a 2D image.  (Wang et al. 2024) enables fine-grained motion control with user-input bounding box and trajectories.
+
+Refer to caption
+Figure 2: Our method consists of two stages: training data generation and video-conditional finetuning. In the left column, we visualize key steps in our data generation pipeline. We begin by (a) detecting and reconstructing SMPL using TRACE; then (b) using LLaVA to generate textual descriptions that capture both the subjects’ appearance and their interaction with the environment; and finally (c) rendering an avatar video using HumanGaussian, based on motion and camera from (a) and appearance from (b). In the right column, we illustrate how the synthetic human avatar video is used to condition the fine-tuning process by leveraging the input video condition and LoRA.
+Human Video Generation
+
+As the study of general object and scene motion grows, a specific subset of controllable human motion-conditioned video generation also evolves simultaneously. Human video generation is in nature hard, especially due to specific body topology and audiences’ high level of awareness to even the smallest artifact. Existing method utilizes motion guidance to improve video faithfulness, signals including OpenPose skeletons (Hu et al. 2023; Wang et al. 2023b), DensePose (Xu et al. 2024b; Karras et al. 2023), SMPL (Zhu et al. 2024), or simply a driving video (Yatim et al. 2024). It still remains challenging to generate videos that allow for detailed 3D control of human body movements and appearance. Our method instead takes explicit 3D human avatar rendering as the control signal for video diffusion models, thus achieving finer level of controllability, and also enables multi-person interactive video generation.
+
+Human Avatar Generation from Text
+
+Realistic 3D human generation from text prompts is an emerging and challenging task. Current research mainly focuses on two aspects to address this challenge: underlying 3D representations and supervisions to optimize them. The 3D representations can be based on either 2D manifolds (such as SMPL (Loper et al. 2015) and SMPL-X (Pavlakos et al. 2019)), or 3D volumetric fields (such as NeuS (Wang et al. 2021), imGHUM (Alldieck, Xu, and Sminchisescu 2021), and 3D Gaussian Splatting (Kerbl et al. 2023)). Supervisions are categorized into diffusion model-guided approaches (also known as Score Distillation Sampling (Poole et al. 2022)), which are trained on various conditions (DensePose (Güler, Neverova, and Kokkinos 2018), normal maps, and depth maps), and non-diffusion-guided approaches (CLIP (Radford et al. 2021)). The combination of these two aspects leads to the development of multiple methods, including AvatarCLIP (Hong et al. 2022a), DreamHuman (Kolotouros et al. 2023), AvatarVerse (Zhang et al. 2023), TADA (Liao et al. 2024), HumanNorm (Huang et al. 2024), and HumanGaussian (Liu et al. 2023b). Despite the rapid growth in 3D human quality, none of the existing approaches achieve photo-realistic quality, especially when rendering with various camera poses, user-given motion sequences and backgrounds. Our method enables control over video generation using human avatars while also enhancing avatar rendering quality.
+
+Method
+Preliminaries
+
+Text-to-Video Diffusion Models are designed to transform textual input into a video data distribution using a reverse diffusion process (Ho, Jain, and Abbeel 2020; Sohl-Dickstein et al. 2015). These models typically operate in a latent space to efficiently manage the complexity of video data (Rombach et al. 2022). During pre-training, a video sample 
+x
+ is encoded by a pre-trained encoder 
+ℰ
+ (Esser, Rombach, and Ommer 2021) to obtain its latent representation 
+z
+∈
+ℝ
+f
+×
+h
+×
+w
+×
+4
+. In the forward diffusion process, random noise 
+ϵ
+ is added to 
+z
+ according to a pre-defined noise schedule 
+{
+β
+t
+}
+t
+=
+1
+T
+. This process is represented as 
+z
+t
+=
+α
+¯
+t
+⁢
+z
++
+1
+−
+α
+¯
+t
+⁢
+ϵ
+, where 
+ϵ
+∼
+𝒩
+⁢
+(
+0
+,
+1
+)
+ represents Gaussian noise with the same dimensions as 
+z
+, 
+α
+¯
+t
+=
+∏
+s
+=
+1
+t
+α
+s
+, and 
+α
+t
+=
+1
+−
+β
+t
+. A UNet (Ronneberger, Fischer, and Brox 2015; Çiçek et al. 2016) model, denoted as 
+ϵ
+θ
+, is employed to denoise 
+z
+t
+, enabling video generation through the reverse diffusion process, conditioned on the video caption 
+c
+. The optimization is guided by the following reweighted variational bound (Ho, Jain, and Abbeel 2020):
+
+ℒ
+⁢
+(
+θ
+)
+=
+𝔼
+z
+,
+c
+,
+ϵ
+,
+t
+⁢
+[
+‖
+ϵ
+−
+ϵ
+θ
+⁢
+(
+α
+¯
+t
+⁢
+z
++
+1
+−
+α
+¯
+t
+⁢
+ϵ
+,
+c
+,
+t
+)
+‖
+2
+2
+]
+(1)
+For video generation during inference, the DDIM sampling method (Song, Meng, and Ermon 2020) is utilized to produce video outputs.
+
+Low-Rank Adaptation (LoRA) finetuning (Hu et al. 2021) is an approach that reduces memory requirements by introducing a small set of trainable parameters, commonly referred to as adapters, while keeping the full model frozen. During stochastic gradient descent, the gradients are propagated through the fixed pretrained model weights to update only the adapters. LoRA achieves this by augmenting a linear projection with an additional factorized projection. Specifically, given a projection 
+𝐗𝐖
+=
+𝐘
+ where 
+𝐗
+∈
+ℝ
+b
+×
+h
+ and 
+𝐖
+∈
+ℝ
+h
+×
+o
+, LoRA modifies the projection as follows:
+
+𝐘
+=
+𝐗𝐖
++
+s
+⁢
+𝐗𝐋
+1
+⁢
+𝐋
+2
+,
+(2)
+where 
+𝐋
+1
+∈
+ℝ
+h
+×
+r
+, 
+𝐋
+2
+∈
+ℝ
+r
+×
+o
+, and 
+s
+ is a scalar.
+
+Creating an Avatar-Motion Video Dataset
+
+We aim to create a dataset 
+{
+(
+V
+,
+y
+s
+,
+V
+a
+)
+}
+, where 
+V
+ represents a real human video clip, 
+y
+s
+ is a textual description of the video scene, and 
+V
+a
+ is a video composed of frames 
+I
+a
+ that are rendered using synthetic, articulated avatars. These avatars are driven by the motion detected from 
+V
+.
+
+Extract SMPL poses. We begin by utilizing TRACE (Sun et al. 2023) to locate, track and extract the SMPL (Loper et al. 2015) parameters of human bodies in 
+V
+. TRACE processes 
+V
+ and generates the SMPL body pose parameters 
+θ
+∈
+ℝ
+24
+×
+6
+ as well as global camera parameters.
+
+Generate appearance prompts. To generate the caption 
+y
+a
+ that describes the appearance of the human in 
+V
+ for creating 3D human avatars, we begin by manually selecting a key frame from 
+V
+ that clearly exhibits the full body appearance of the characters. We compute a 2D bounding box based on the bounding box of the generated mesh 
+M
+, which is derived from the SMPL parameters 
+θ
+. This bounding box is then overlaid onto the original image 
+I
+, producing the image 
+I
+b
+. Next, we ask LLaVA (Liu et al. 2023a) to describe the appearance of the character by posing the question 
+Q
+a
+: ”How would you describe the appearance of the person in the bounding box?”. The output from LLaVA 
+y
+a
+, is used as the descriptive prompt. Refer to the left most column of Figure 2 for a visual illustration of this pipeline.
+
+Animate 3DGS. We use 
+y
+a
+ as the prompt for HumanGaussian (Liu et al. 2023b), a method that leverages a pretrained 2D model to extract information for training a textured A-posed articulated 3DGS 
+g
+ϕ
+. We animate the synthesized HumanGaussian avatar 
+g
+ϕ
+ with the SMPL parameters 
+θ
+ extracted by TRACE to generate a sequence of 3D avatar movements that takes both appearance and motion into consideration. Then we render this 3D sequence into 2D videos by simulating cameras following the parameters estimated by TRACE along with the SMPL poses. We denote the rendered image with black background 
+I
+a
+=
+g
+ϕ
+⁢
+(
+θ
+)
+.
+
+Generate scene prompts. The final step is to generate the caption 
+y
+s
+ that describes the scene in 
+V
+. We use the middle frame of 
+V
+ as input to LLaVA, posing the question 
+Q
+s
+: ”How does the scene look? How do the humans in the scene interact with each other and the environment? What is the atmosphere of the image?”. The output 
+y
+s
+ from LLaVA serves as the scene description.
+
+In summary, our data processing module takes a real video 
+V
+ with multiple interactive people as input, and outputs a synthetic video 
+V
+a
+, where the realistic human motions are transformed into avatars rendering, along with the scene description 
+y
+s
+. The off-the-shelf modules we used, including TRACE (video-to-motion), LLaVA (vision-language QA), and HumanGaussian (text-to-3D avatar) can be replaced by any advanced pre-trained methods with similar functionality, demonstrating the flexibility of the approach. More data processing details are in the Appendix.
+
+Refer to caption
+Figure 3: Video with explicit camera movement control. The left column shows a zoom-in sequence, and the right column shows a zoom-out sequence. Each column pairs the input rendered avatar video on the left with the generated video from our method on the right.
+Refer to caption
+Figure 4: Video with user-defined human motion control. Given an action prompt, we start with animating the pre-generated human avatar by motions generated from the text. We render the motions for a specific camera angle (left columns in each pair), and feed that as a condition to our video model to generate photorealistic human videos. Our model is able to generate videos of various novel activities that are out of distribution of the original training data.
+Model Video Conditional Tuning
+
+We train a text and video-conditioned diffusion model, which leverages LoRA to generate video from 
+V
+a
+ and 
+y
+s
+. Our model is built upon ModelScopeT2V (Wang et al. 2023a), a large-scale text-to-video latent diffusion model.
+
+Compared to the text-to-video objective in Eq. 1, we introduce an additional condition, 
+z
+a
+=
+ℰ
+⁢
+(
+V
+a
+)
+, into the model. The corresponding latent diffusion objective is as follows:
+
+ℒ
+⁢
+(
+θ
+)
+=
+𝔼
+z
+,
+y
+s
+,
+z
+a
+,
+ϵ
+,
+t
+⁢
+[
+‖
+ϵ
+−
+ϵ
+θ
+⁢
+(
+z
+t
+,
+y
+s
+,
+z
+a
+,
+t
+)
+‖
+2
+2
+]
+(3)
+Previous works including PITI (Wang et al. 2022) and InstructPix2Pix (Brooks, Holynski, and Efros 2023) demonstrate that fine-tuning large image diffusion models often outperforms training a model from scratch for image translation tasks, particularly when paired training data is limited. Consequently, we initialize the weights of our model using a pretrained ModelScopeT2V (Wang et al. 2023a) checkpoint, leveraging its extensive text-to-video generation capabilities for the non-LoRA components, which are subsequently frozen. For the LoRA components, 
+𝐋
+𝟏
+ is initialized randomly, while 
+𝐋
+𝟐
+ is initialized with zeros.
+
+To enable video conditioning, we double the size of the input channels to the first convolutional layer. For each frame, we concatenate the noise latent 
+z
+t
+ and the additional condition frame 
+ℰ
+⁢
+(
+V
+a
+)
+ on the channel dimension, and pass it through the enlarged first layer. For text-conditioning, we reuse the original cross-attention conditioning mechanism, which injects the CLIP embedding of caption into the module through cross-attention transformers.
+
+All accessible weights of the diffusion model are initialized from the pretrained ModelScopeT2V checkpoints, whereas the weights corresponding to the newly added input channels are initialized to zero. Specifically, we freeze the CLIP embedder for text condition.
+
+Inference
+
+At inference time, we first use a textual description to synthesize two-person interactive motions in SMPL (Loper et al. 2015) format with InterGen (Liang et al. 2024). We then generate HumanGaussian (Liu et al. 2023b) avatars following the appearance prompts, drive them with the synthesized motions, and control the camera to render frames of detailed movements. Finally, we condition our text-to-video model with the rendered motion frames to generate photorealistic human videos that follow both the appearance and movements of the avatar.
+
+Results
+Dataset Preparation and Implementation Details
+
+We collect our film video dataset which contains 6,771 frames, recorded at 24 frames per second (FPS). We filter out clips where the subject is occasionally lost or absent due to TRACE’s tracking issues, and reduce the dataset to 5,788 valid clips, with a downsampled FPS of 8. We use the first 5,500 clips for training, keeping and the rest for testing the performance of our method and baseline models. Further details can be found in the Appendix.
+
+For our experiments, we set the LoRA rank to 4 and kept both the spatial and temporal gradient weights at 1. We adopt the publicly available text-to-video diffusion model ModelScopeT2V as the base model. ModelScopeT2V is pre-trained on WebVid10M (Bain et al. 2021) with 1000 DDIM steps and is capable of generating videos at a resolution of 
+16
+×
+256
+×
+256
+. We performed a 20-step DDIM inference, incorporating classifier-free guidance (Ho and Salimans 2022) by default. Experiments were conducted on 8 NVIDIA A100 GPUs, with a batch size of 8 and a learning rate of 
+1
+×
+10
+−
+6
+. To balance cost and performance, we fine-tuned AMG with default parameters for 60k steps, unless otherwise specified. For the reasoning behind using 60k steps, the Appendix provides a detailed explanation.
+
+Qualitative Evaluation
+
+Motion Modification. Our model can generalize to novel, out-of-domain (OOD) motions that never appear in the training data, and generate corresponding videos.
+
+In Fig. 4, we present examples of various OOD actions, including boxing, fencing, Latin dance, and jumping. Thanks to the power of the off-the-shelf text-to-motion model, we are able to generate interactive human motions used to drive the avatar, and condition the video model on the rendered videos. First, the model accurately captures the motion locations. Additionally, the model successfully follows the input conditions, reflecting detailed motions that are often difficult to describe in text prompts but can be replicated by graphic artists. Notably, the model captures subtle details effectively. For instance, in the fencing example, the squatting motion is accurately reflected in the generated video. In the Latin dance example, the model demonstrates a strong understanding of complex depth exchanges, producing high-quality video outputs. We attribute this capability to the presence of dance-related data in the training data. For additional analysis, please refer to the Appendix.
+
+Camera Movement. In addition to human motion, camera movement plays a critical role in the dynamics of 3D scenes. While it is often ignored by general 2D generative model without fine-tuning on annotated datasets, our proposed pipeline is able to fully control the camera trajectory when rendering 3D human avatars. This gives us the freedom to manage camera movement in 3D space. In Fig. 3, we present video generated under two camera movement scenarios: zooming in and zooming out. The results indicate that the generated video can faithfully follow the user-specified camera movements while simultaneously capturing the avatars’ motions. Additionally, non-human objects in the generated video, such as the stone bench, also accurately respond to the camera movements, demonstrating that camera dynamics priors are preserved from the pre-trained model. For more examples, please refer to the Appendix.
+
+Refer to caption
+Figure 5: Video with background changes. First column’s left upper corner presents the same character avatar rendering, and the rest shows the result video with different prompts describing the scene.
+Refer to caption
+Figure 6:Visual comparison with baselines. Note that DMT is unable to generate background or character appearance following the prompt. MagicAnimate takes the first ground-truth frame as reference, but still messes up the identities when there are more than one subjects with interactive motions.
+Background Modification. After the LoRA-based fine-tuning stage, our model still preserves the general knowledge from the pre-trained model and can achieves effects of background modification following changes in prompts.
+
+As shown in Fig. 5, we keep the human avatars while changing the scene prompt for video generation. Our results indicate that the model successfully preserves the identity features, such as the appearance and gender of the input, while effectively generalizing to different backgrounds. The generated video also maintains the consistent human locations and movements with the input avatar rendering.
+
+Notably, when the background is switched to a beach setting, the model adapts the clothing, changing the shoes and shorts accordingly. It is additionally able to seamlessly modify the lighting and color tone for generated human to harmonize with the background scene. Such realism validates that our model not only takes advantage of rich 3D-aware condition, but enjoys the strong 2D prior from the pre-trained model retained by LoRA.
+
+Baselines
+
+We compare our method with two representative categories of current works: those directly using video as a guidance for motion signal, and those using human motion sequences as intermediate control signals. For the former category, we compare with a representative work DMT (Yatim et al. 2024) , a training-free model that takes in a video and a textual prompt to achieve the effect of text-driven motion transfer. We use our rendered HumanGaussian outputs 
+V
+a
+ as the video input to control motion, and the textual prompt to control the video “style”. We follow the steps in DMT, including DDIM inversion and SMM optimization sampling. For the latter category, we compare with a pioneering work on human video generation controlled by a reference frame and a pose sequence, namely MagicAnimate (Xu et al. 2024b). We extract pose sequences from the ground-truth video, and use the first real video frame as reference frames. Note that this evaluation setting is strictly in favor of those baselines, because our method doesn’t reply on a ground-truth reference frame nor groundtruth pose sequences. Everything is generated on the fly instead.
+
+The results in Fig. 6 suggest that DMT heavily relies on the provided prompt. It keeps the major semantic layout, but cannot generate high-quality video with background aligned with the scene prompt. DMT also struggles with the precise positioning of avatars. In the left column, the scale of the generated human figures is not proportional to the input scale. On the right, although the scale is preserved, the relative positions of the white t-shirt and yellow skirt are switched. This suggests that DMT does not effectively utilize input information such as color and avatar layout. In contrast, our method leverages pre-trained text-to-video models, maximizing their potential. MagicAnimate is able to generate reasonable human videos, but cannot identify the two different identities especially when there is some occlusion in the middle. As seen in rows 2, 3, and 4, it switches the identities after the man’s body is fully occluded. This randomness arises because the method, relying only on semantic signals, fails to maintain consistent identities in overlapping frames. Our method, however, maintains identity consistency by directly rendering the corresponding avatars.
+
+The remaining results are in the Appendix.
+
+Quantitative Evaluation
+
+Method	CLIP Score 
+↑
+Motion Score 
+↑
+Ground Truth	34.43	99.88
+DMT	32.51	56.31
+MagicAnimate	33.23	26.53
+Ours	33.59	69.88
+Table 1: Quantitative evaluation. Our method achieves the best performance among the methods.
+In Tab. 1, we evaluate our method using the CLIP text similarity score and the motion fidelity score, comparing it with other methods. The CLIP score is calculated by measuring the similarity between each frame and the corresponding caption of the clip, with the final score being the average across all frames. The motion fidelity score is determined by evaluating the similarity of tracklets between two videos. The formal definitions of the two metrics are in the Appendix.
+
+For our evaluation, we select five clips from the withheld test data, each consisting of 16 frames and an FPS of 8, from a total of 288 test clips. Among all the methods, our approach achieves the best overall performance.
+
+MagicAnimate incorporates the background into the generation process, which contributes to a relatively higher similarity score. In contrast, DMT, which only takes rendered avatars on a black background, is not able to generate the exact scene but produces more accurate motion, resulting in a higher motion fidelity and a lower CLIP similarity score. Our method effectively generates backgrounds that are aligned with the text, even if they are not identical to the ground truth, and it produces motion that closely matches the ground truth.
+
+Conclusion
+In this work, we propose a novel method to generate human videos following specific appearance and movements. We fine-tune a pre-trained text-to-video diffusion model by conditioning on human avatar movement frames. Our results show superior performance on two-person human video generation than baseline methods. We also demonstrate diverse applications in video generation, generating various backgrounds, novel motions, and free camera poses.
+
+References
+Alldieck, Xu, and Sminchisescu (2021)
+Alldieck, T.; Xu, H.; and Sminchisescu, C. 2021.imGHUM: Implicit Generative Models of 3D Human Shape and Articulated Pose.2021 IEEE/CVF International Conference on Computer Vision (ICCV), 5441–5450.
+Bain et al. (2021)
+Bain, M.; Nagrani, A.; Varol, G.; and Zisserman, A. 2021.Frozen in Time: A Joint Video and Image Encoder for End-to-End Retrieval.In IEEE International Conference on Computer Vision.
+Blattmann et al. (2023a)
+Blattmann, A.; Dockhorn, T.; Kulal, S.; Mendelevitch, D.; Kilian, M.; Lorenz, D.; Levi, Y.; English, Z.; Voleti, V.; Letts, A.; et al. 2023a.Stable video diffusion: Scaling latent video diffusion models to large datasets.arXiv preprint arXiv:2311.15127.
+Blattmann et al. (2023b)
+Blattmann, A.; Rombach, R.; Ling, H.; Dockhorn, T.; Kim, S. W.; Fidler, S.; and Kreis, K. 2023b.Align your Latents: High-Resolution Video Synthesis with Latent Diffusion Models.In IEEE Conference on Computer Vision and Pattern Recognition (CVPR).
+Brooks, Holynski, and Efros (2023)
+Brooks, T.; Holynski, A.; and Efros, A. A. 2023.Instructpix2pix: Learning to follow image editing instructions.In Proceedings of the IEEE/CVF Conference on Computer Vision and Pattern Recognition, 18392–18402.
+Chen et al. (2023)
+Chen, H.; Xia, M.; He, Y.; Zhang, Y.; Cun, X.; Yang, S.; Xing, J.; Liu, Y.; Chen, Q.; Wang, X.; Weng, C.; and Shan, Y. 2023.VideoCrafter1: Open Diffusion Models for High-Quality Video Generation.arXiv:2310.19512.
+Chen et al. (2024)
+Chen, H.; Zhang, Y.; Cun, X.; Xia, M.; Wang, X.; Weng, C.; and Shan, Y. 2024.VideoCrafter2: Overcoming Data Limitations for High-Quality Video Diffusion Models.arXiv:2401.09047.
+Çiçek et al. (2016)
+Çiçek, Ö.; Abdulkadir, A.; Lienkamp, S. S.; Brox, T.; and Ronneberger, O. 2016.3D U-Net: learning dense volumetric segmentation from sparse annotation.In Medical Image Computing and Computer-Assisted Intervention–MICCAI 2016: 19th International Conference, Athens, Greece, October 17-21, 2016, Proceedings, Part II 19, 424–432. Springer.
+Dai et al. (2023)
+Dai, Z.; Zhang, Z.; Yao, Y.; Qiu, B.; Zhu, S.; Qin, L.; and Wang, W. 2023.AnimateAnything: Fine-Grained Open Domain Image Animation with Motion Guidance.arXiv e-prints, arXiv–2311.
+Esser, Rombach, and Ommer (2021)
+Esser, P.; Rombach, R.; and Ommer, B. 2021.Taming transformers for high-resolution image synthesis.In Proceedings of the IEEE/CVF conference on computer vision and pattern recognition, 12873–12883.
+Gal et al. (2023)
+Gal, R.; Vinker, Y.; Alaluf, Y.; Bermano, A. H.; Cohen-Or, D.; Shamir, A.; and Chechik, G. 2023.Breathing Life Into Sketches Using Text-to-Video Priors.
+Girdhar et al. (2024)
+Girdhar, R.; Singh, M.; Brown, A.; Duval, Q.; Azadi, S.; Rambhatla, S. S.; Shah, A.; Yin, X.; Parikh, D.; and Misra, I. 2024.Emu Video: Factorizing Text-to-Video Generation by Explicit Image Conditioning.arXiv:2311.10709.
+Gong et al. (2023)
+Gong, Y.; Pang, Y.; Cun, X.; Xia, M.; He, Y.; Chen, H.; Wang, L.; Zhang, Y.; Wang, X.; Shan, Y.; and Yang, Y. 2023.TaleCrafter: Interactive Story Visualization with Multiple Characters.arXiv:2305.18247.
+Güler, Neverova, and Kokkinos (2018)
+Güler, R. A.; Neverova, N.; and Kokkinos, I. 2018.Densepose: Dense human pose estimation in the wild.In Proceedings of the IEEE conference on computer vision and pattern recognition, 7297–7306.
+Guo et al. (2023)
+Guo, Y.; Yang, C.; Rao, A.; Agrawala, M.; Lin, D.; and Dai, B. 2023.SparseCtrl: Adding Sparse Controls to Text-to-Video Diffusion Models.arXiv:2311.16933.
+Gupta et al. (2023)
+Gupta, A.; Yu, L.; Sohn, K.; Gu, X.; Hahn, M.; Fei-Fei, L.; Essa, I.; Jiang, L.; and Lezama, J. 2023.Photorealistic Video Generation with Diffusion Models.arXiv:2312.06662.
+He et al. (2024)
+He, H.; Xu, Y.; Guo, Y.; Wetzstein, G.; Dai, B.; Li, H.; and Yang, C. 2024.CameraCtrl: Enabling Camera Control for Text-to-Video Generation.arXiv:2404.02101.
+He et al. (2022)
+He, Y.; Yang, T.; Zhang, Y.; Shan, Y.; and Chen, Q. 2022.Latent Video Diffusion Models for High-Fidelity Long Video Generation.
+Ho et al. (2022a)
+Ho, J.; Chan, W.; Saharia, C.; Whang, J.; Gao, R.; Gritsenko, A.; Kingma, D. P.; Poole, B.; Norouzi, M.; Fleet, D. J.; and Salimans, T. 2022a.Imagen Video: High Definition Video Generation with Diffusion Models.arXiv:2210.02303.
+Ho, Jain, and Abbeel (2020)
+Ho, J.; Jain, A.; and Abbeel, P. 2020.Denoising diffusion probabilistic models.Advances in neural information processing systems, 33: 6840–6851.
+Ho and Salimans (2022)
+Ho, J.; and Salimans, T. 2022.Classifier-free diffusion guidance.arXiv preprint arXiv:2207.12598.
+Ho et al. (2022b)
+Ho, J.; Salimans, T.; Gritsenko, A.; Chan, W.; Norouzi, M.; and Fleet, D. J. 2022b.Video diffusion models.arXiv:2204.03458.
+Hong et al. (2022a)
+Hong, F.; Zhang, M.; Pan, L.; Cai, Z.; Yang, L.; and Liu, Z. 2022a.AvatarCLIP: Zero-Shot Text-Driven Generation and Animation of 3D Avatars.ACM Transactions on Graphics (TOG), 41(4): 1–19.
+Hong et al. (2022b)
+Hong, W.; Ding, M.; Zheng, W.; Liu, X.; and Tang, J. 2022b.CogVideo: Large-scale Pretraining for Text-to-Video Generation via Transformers.arXiv preprint arXiv:2205.15868.
+Hu et al. (2021)
+Hu, E. J.; Shen, Y.; Wallis, P.; Allen-Zhu, Z.; Li, Y.; Wang, S.; Wang, L.; and Chen, W. 2021.Lora: Low-rank adaptation of large language models.arXiv preprint arXiv:2106.09685.
+Hu et al. (2023)
+Hu, L.; Gao, X.; Zhang, P.; Sun, K.; Zhang, B.; and Bo, L. 2023.Animate Anyone: Consistent and Controllable Image-to-Video Synthesis for Character Animation.arXiv preprint arXiv:2311.17117.
+Hu and Xu (2023)
+Hu, Z.; and Xu, D. 2023.VideoControlNet: A Motion-Guided Video-to-Video Translation Framework by Using Diffusion Model with ControlNet.arXiv:2307.14073.
+Huang et al. (2024)
+Huang, X.; Shao, R.; Zhang, Q.; Zhang, H.; Feng, Y.; Liu, Y.; and Wang, Q. 2024.Humannorm: Learning normal diffusion model for high-quality and realistic 3d human generation.
+Karaev et al. (2023)
+Karaev, N.; Rocco, I.; Graham, B.; Neverova, N.; Vedaldi, A.; and Rupprecht, C. 2023.Cotracker: It is better to track together.arXiv preprint arXiv:2307.07635.
+Karras et al. (2023)
+Karras, J.; Holynski, A.; Wang, T.-C.; and Kemelmacher-Shlizerman, I. 2023.DreamPose: Fashion Image-to-Video Synthesis via Stable Diffusion.
+Kerbl et al. (2023)
+Kerbl, B.; Kopanas, G.; Leimkühler, T.; and Drettakis, G. 2023.3D Gaussian Splatting for Real-Time Radiance Field Rendering.ACM Transactions on Graphics, 42(4).
+Kolotouros et al. (2023)
+Kolotouros, N.; Alldieck, T.; Zanfir, A.; Bazavan, E. G.; Fieraru, M.; and Sminchisescu, C. 2023.DreamHuman: Animatable 3D Avatars from Text.
+Lewis, Cordner, and Fong (2023)
+Lewis, J. P.; Cordner, M.; and Fong, N. 2023.Pose space deformation: a unified approach to shape interpolation and skeleton-driven deformation.In Seminal Graphics Papers: Pushing the Boundaries, Volume 2, 811–818.
+Li et al. (2024)
+Li, Z.; Tucker, R.; Snavely, N.; and Holynski, A. 2024.Generative Image Dynamics.In Proceedings of the IEEE/CVF Conference on Computer Vision and Pattern Recognition (CVPR).
+Liang et al. (2024)
+Liang, H.; Zhang, W.; Li, W.; Yu, J.; and Xu, L. 2024.Intergen: Diffusion-based multi-human motion generation under complex interactions.International Journal of Computer Vision, 1–21.
+Liao et al. (2024)
+Liao, T.; Yi, H.; Xiu, Y.; Tang, J.; Huang, Y.; Thies, J.; and Black, M. J. 2024.TADA! Text to Animatable Digital Avatars.In International Conference on 3D Vision (3DV).
+Liu et al. (2023a)
+Liu, H.; Li, C.; Wu, Q.; and Lee, Y. J. 2023a.Visual Instruction Tuning.
+Liu et al. (2023b)
+Liu, X.; Zhan, X.; Tang, J.; Shan, Y.; Zeng, G.; Lin, D.; Liu, X.; and Liu, Z. 2023b.HumanGaussian: Text-Driven 3D Human Generation with Gaussian Splatting.arXiv preprint arXiv:2311.17061.
+Long et al. (2024)
+Long, F.; Qiu, Z.; Yao, T.; and Mei, T. 2024.VideoDrafter: Content-Consistent Multi-Scene Video Generation with LLM.arXiv:2401.01256.
+Loper et al. (2015)
+Loper, M.; Mahmood, N.; Romero, J.; Pons-Moll, G.; and Black, M. J. 2015.SMPL: A Skinned Multi-Person Linear Model.ACM Trans. Graphics (Proc. SIGGRAPH Asia), 34(6): 248:1–248:16.
+Ma et al. (2024)
+Ma, X.; Wang, Y.; Jia, G.; Chen, X.; Liu, Z.; Li, Y.-F.; Chen, C.; and Qiao, Y. 2024.Latte: Latent Diffusion Transformer for Video Generation.arXiv preprint arXiv:2401.03048.
+Pavlakos et al. (2019)
+Pavlakos, G.; Choutas, V.; Ghorbani, N.; Bolkart, T.; Osman, A. A. A.; Tzionas, D.; and Black, M. J. 2019.Expressive Body Capture: 3D Hands, Face, and Body from a Single Image.In Proceedings IEEE Conf. on Computer Vision and Pattern Recognition (CVPR), 10975–10985.
+Peebles and Xie (2022)
+Peebles, W.; and Xie, S. 2022.Scalable Diffusion Models with Transformers.arXiv preprint arXiv:2212.09748.
+Poole et al. (2022)
+Poole, B.; Jain, A.; Barron, J. T.; and Mildenhall, B. 2022.Dreamfusion: Text-to-3d using 2d diffusion.arXiv preprint arXiv:2209.14988.
+Radford et al. (2021)
+Radford, A.; Kim, J. W.; Hallacy, C.; Ramesh, A.; Goh, G.; Agarwal, S.; Sastry, G.; Askell, A.; Mishkin, P.; Clark, J.; et al. 2021.Learning transferable visual models from natural language supervision.In International conference on machine learning, 8748–8763. PMLR.
+Rombach et al. (2022)
+Rombach, R.; Blattmann, A.; Lorenz, D.; Esser, P.; and Ommer, B. 2022.High-resolution image synthesis with latent diffusion models.In Proceedings of the IEEE/CVF conference on computer vision and pattern recognition, 10684–10695.
+Ronneberger, Fischer, and Brox (2015)
+Ronneberger, O.; Fischer, P.; and Brox, T. 2015.U-net: Convolutional networks for biomedical image segmentation.In Medical image computing and computer-assisted intervention–MICCAI 2015: 18th international conference, Munich, Germany, October 5-9, 2015, proceedings, part III 18, 234–241. Springer.
+Shan et al. (2024)
+Shan, M.; Dong, L.; Han, Y.; Yao, Y.; Liu, T.; Nwogu, I.; Qi, G.-J.; and Hill, M. 2024.Towards Open Domain Text-Driven Synthesis of Multi-Person Motions.arXiv preprint arXiv:2405.18483.
+Skorokhodov, Tulyakov, and Elhoseiny (2021)
+Skorokhodov, I.; Tulyakov, S.; and Elhoseiny, M. 2021.StyleGAN-V: A Continuous Video Generator with the Price, Image Quality and Perks of StyleGAN2.
+Sohl-Dickstein et al. (2015)
+Sohl-Dickstein, J.; Weiss, E.; Maheswaranathan, N.; and Ganguli, S. 2015.Deep unsupervised learning using nonequilibrium thermodynamics.In International conference on machine learning, 2256–2265. PMLR.
+Song, Meng, and Ermon (2020)
+Song, J.; Meng, C.; and Ermon, S. 2020.Denoising diffusion implicit models.arXiv preprint arXiv:2010.02502.
+Sun et al. (2023)
+Sun, Y.; Bao, Q.; Liu, W.; Mei, T.; and Black, M. J. 2023.TRACE: 5D temporal regression of avatars with dynamic cameras in 3D environments.In Proceedings of the IEEE/CVF Conference on Computer Vision and Pattern Recognition, 8856–8866.
+Tulyakov et al. (2018)
+Tulyakov, S.; Liu, M.-Y.; Yang, X.; and Kautz, J. 2018.MoCoGAN: Decomposing motion and content for video generation.In IEEE Conference on Computer Vision and Pattern Recognition (CVPR), 1526–1535.
+Wang et al. (2023a)
+Wang, J.; Yuan, H.; Chen, D.; Zhang, Y.; Wang, X.; and Zhang, S. 2023a.Modelscope text-to-video technical report.arXiv preprint arXiv:2308.06571.
+Wang et al. (2024)
+Wang, J.; Zhang, Y.; Zou, J.; Zeng, Y.; Wei, G.; Yuan, L.; and Li, H. 2024.Boximator: Generating Rich and Controllable Motions for Video Synthesis.arXiv:2402.01566.
+Wang et al. (2021)
+Wang, P.; Liu, L.; Liu, Y.; Theobalt, C.; Komura, T.; and Wang, W. 2021.NeuS: Learning Neural Implicit Surfaces by Volume Rendering for Multi-view Reconstruction.arXiv preprint arXiv:2106.10689.
+Wang et al. (2023b)
+Wang, T.; Li, L.; Lin, K.; Lin, C.-C.; Yang, Z.; Zhang, H.; Liu, Z.; and Wang, L. 2023b.DisCo: Disentangled Control for Referring Human Dance Generation in Real World.arXiv preprint arXiv:2307.00040.
+Wang et al. (2022)
+Wang, T.; Zhang, T.; Zhang, B.; Ouyang, H.; Chen, D.; Chen, Q.; and Wen, F. 2022.Pretraining is all you need for image-to-image translation.arXiv preprint arXiv:2205.12952.
+Xing et al. (2023)
+Xing, J.; Xia, M.; Zhang, Y.; Chen, H.; Wang, X.; Wong, T.-T.; and Shan, Y. 2023.DynamiCrafter: Animating Open-domain Images with Video Diffusion Priors.
+Xu et al. (2024a)
+Xu, D.; Nie, W.; Liu, C.; Liu, S.; Kautz, J.; Wang, Z.; and Vahdat, A. 2024a.CamCo: Camera-Controllable 3D-Consistent Image-to-Video Generation.arXiv preprint arXiv:2406.02509.
+Xu et al. (2024b)
+Xu, Z.; Zhang, J.; Liew, J. H.; Yan, H.; Liu, J.-W.; Zhang, C.; Feng, J.; and Shou, M. Z. 2024b.MagicAnimate: Temporally Consistent Human Image Animation using Diffusion Model.
+Yang et al. (2024a)
+Yang, S.; Hou, L.; Huang, H.; Ma, C.; Wan, P.; Zhang, D.; Chen, X.; and Liao, J. 2024a.Direct-a-Video: Customized Video Generation with User-Directed Camera Movement and Object Motion.arXiv preprint arXiv:2402.03162.
+Yang et al. (2023)
+Yang, S.; Zhou, Y.; Liu, Z.; ; and Loy, C. C. 2023.Rerender A Video: Zero-Shot Text-Guided Video-to-Video Translation.In ACM SIGGRAPH Asia 2023 Conference Proceedings.
+Yang et al. (2024b)
+Yang, Z.; Teng, J.; Zheng, W.; Ding, M.; Huang, S.; Xu, J.; Yang, Y.; Zhang, X.; Gu, X.; Feng, G.; Yin, D.; Hong, W.; Wang, W.; Cheng, Y.; Zhang, Y.; Liu, T.; Xu, B.; Dong, Y.; and Tang, J. 2024b.CogVideoX: Text-to-Video Diffusion Models with An Expert Transformer.
+Yatim et al. (2024)
+Yatim, D.; Fridman, R.; Bar-Tal, O.; Kasten, Y.; and Dekel, T. 2024.Space-time diffusion features for zero-shot text-driven motion transfer.In Proceedings of the IEEE/CVF Conference on Computer Vision and Pattern Recognition, 8466–8476.
+Yin et al. (2023)
+Yin, S.; Wu, C.; Liang, J.; Shi, J.; Li, H.; Ming, G.; and Duan, N. 2023.DragNUWA: Fine-grained Control in Video Generation by Integrating Text, Image, and Trajectory.arXiv:2308.08089.
+Yu et al. (2023)
+Yu, L.; Cheng, Y.; Sohn, K.; Lezama, J.; Zhang, H.; Chang, H.; Hauptmann, A. G.; Yang, M.-H.; Hao, Y.; Essa, I.; and Jiang, L. 2023.MAGVIT: Masked generative video transformer.In Proceedings of the IEEE/CVF Conference on Computer Vision and Pattern Recognition.
+Yu et al. (2022)
+Yu, S.; Tack, J.; Mo, S.; Kim, H.; Kim, J.; Ha, J.-W.; and Shin, J. 2022.Generating Videos with Dynamics-aware Implicit Generative Adversarial Networks.In International Conference on Learning Representations.
+Zhang et al. (2023)
+Zhang, H.; Chen, B.; Yang, H.; Qu, L.; Wang, X.; Chen, L.; Long, C.; Zhu, F.; Du, K.; and Zheng, M. 2023.AvatarVerse: High-quality and Stable 3D Avatar Creation from Text and Pose.arXiv:2308.03610.
+Zhu et al. (2024)
+Zhu, S.; Chen, J. L.; Dai, Z.; Xu, Y.; Cao, X.; Yao, Y.; Zhu, H.; and Zhu, S. 2024.Champ: Controllable and Consistent Human Image Animation with 3D Parametric Guidance.arXiv:2403.14781.
+Refer to caption
+Figure 7: Common Reconstruction Errors in TRACE. From panel (a) to (l), we display some common errors observed in the output of TRACE (Sun et al. 2023). The upper row in each panel shows the input frame, while the lower row presents the output rendered by projecting the SMPL (Loper et al. 2015) mesh back onto the image plane. The error regions are highlighted with pink boxes in the upper row. The corresponding regions in the lower row are not marked for clarity. The numbers on the mesh represent identity numbers generated by TRACE.
+Appendix AMore Data Processing Details
+We selected a well-known clip from the film La La Land. This clip has a duration of 4 minutes and 42 seconds. The URL for the clip is provided here1
+1
+https://www.youtube.com/watch?v=LM0˙hstiMLw&t=5s
+. The downloaded resolution of the clip is 1280 × 720.
+
+Preliminaries
+SMPL-X (Pavlakos et al. 2019) is a comprehensive 3D parametric human model that defines the shape topology of the body, hands, and face. The model consists of 10,475 vertices and 54 keypoints. By leveraging pose parameters 
+θ
+ (which includes body pose 
+θ
+b
+, jaw pose 
+θ
+f
+, and finger pose 
+θ
+h
+), shape parameters 
+β
+, and expression parameters 
+ψ
+, the 3D SMPL-X human model 
+M
+⁢
+(
+β
+,
+θ
+,
+ψ
+)
+ can be expressed as:
+
+T
+⁢
+(
+β
+,
+θ
+,
+ψ
+)
+=
+T
+¯
++
+B
+s
+⁢
+(
+β
+)
++
+B
+p
+⁢
+(
+θ
+)
++
+B
+e
+⁢
+(
+ψ
+)
+,
+(4)
+M
+⁢
+(
+β
+,
+θ
+,
+ψ
+)
+=
+LBS
+⁢
+(
+T
+⁢
+(
+β
+,
+θ
+,
+ψ
+)
+,
+J
+⁢
+(
+β
+)
+,
+θ
+,
+𝒲
+)
+,
+(5)
+where 
+T
+¯
+ denotes the mean template shape; 
+B
+s
+, 
+B
+p
+, and 
+B
+e
+ represent the blend shape functions corresponding to shape, pose, and expression, respectively; 
+T
+⁢
+(
+β
+,
+θ
+,
+ψ
+)
+ is the non-rigid deformation of 
+T
+¯
+; and 
+LBS
+⁢
+(
+⋅
+)
+ is the linear blend skinning function (Lewis, Cordner, and Fong 2023) that maps 
+T
+⁢
+(
+β
+,
+θ
+,
+ψ
+)
+ to the target pose 
+θ
+, using the skeleton joints 
+J
+⁢
+(
+β
+)
+ and the blend weights 
+𝒲
+ associated with each vertex.
+
+TRACE Results
+Refer to caption
+Figure 8: Jumping Results Sampled from ModelScope. We present four samples generated by ModelScope (Wang et al. 2023a). The corresponding prompt used in ModelScope is shown in the pink box. Each sampled video has a resolution of 256 by 256 pixels and a length of 16 frames. We display six evenly distributed frames from the sampled videos.
+Refer to caption
+Figure 9: Different Total Camera Rotation Angle in Generated Video. We display three different total camera rotation angles: 60, 180, and 360 degrees. By ”total angle,” we refer to the degree of rotation between the first frame and the last frame.
+Refer to caption
+Figure 10: The visualization illustrates the evolution of the model’s behavior as training iterations increase. The left section displays the evaluation of the model’s performance: the top row presents the results on the hold-out test data, while the bottom row shows the results when the background prompt is altered. The right section contains the input avatar video frame and the corresponding video frame from the dataset.
+Even though TRACE (Sun et al. 2023) is renowned for robust human trajectory reconstruction, we observed several issues in its application, particularly when used in real-world scenarios. In Fig. 7, we highlight some common mistakes encountered with TRACE in the wild.
+
+As shown in panels (a) and (e), the tracking often fails under certain conditions. The first issue arises from TRACE’s insufficient handling of partial body tracking. The second issue occurs frequently in the presence of occlusions. In panel (b), the reconstructed right arm appears well-posed but misaligned with the actual position of the actress when projected back onto the image. In panel (c), the model struggles with depth perception, making it difficult to accurately distinguish the front and back positions of the left and right legs. In panel (d), the man is carrying a blazer on his left forearm, but the algorithm fails to recognize this, leading to incorrect localization of the forearm.
+
+Panels (f) and (g) show instances where the actress’s arms are positioned behind her back, yet the algorithm incorrectly places the arms in front. In panel (h), a noticeable head-twisting action is inaccurately represented, likely due to the limitations of the SMPL model, which constrains neck rotation. Panels (i) and (j) illustrate errors in body orientation, potentially due to the algorithm’s disregard for temporal information. In panel (k), the algorithm fails to accurately locate overlapping legs, possibly due to limitations in the SMPL model. Finally, in panel (l), a quick high-kick action by the actress is not properly recognized by the algorithm. Although such actions occur at a lower frequency, they cannot be overlooked, especially given the importance of action films in the film industry.
+
+We hope these observations will stimulate further advancements in human trajectory reconstruction within our community. A more detailed analysis of how these issues affect the generated results are provided in later sections.
+
+Prompt Used in HumanGaussian
+The input prompts used in HumanGaussian are as follows:
+
+A woman wearing a bright yellow dress, which stands out against the darker background. She is walking with a relaxed posture, and her dress is sleeveless, flowing just above her knees.
+
+A man wearing a white dress shirt and dark pants, suggesting a formal or semi-formal appearance.
+
+Converting TRACE to HumanGaussian
+The output from TRACE (Sun et al. 2023) is provided in SMPL (Loper et al. 2015) format, whereas the A-pose template in HumanGaussian (Liu et al. 2023b) utilizes the SMPL-X (Pavlakos et al. 2019) format. To align these formats, we convert the SMPL A-pose to the SMPL-X A-pose using the conversion tools available in the SMPL-X repository.2
+2
+https://github.com/vchoutas/smplx/blob/main/transfer˙model/README.md
+ Once trained, HumanGaussian can be driven by skeletal motion from any source that shares the same manifold, even if the topologies differ. Consequently, this allows the output from TRACE to effectively drive the HumanGaussian model.
+
+Appendix BMore Results
+More Qualitative Analysis
+It is worth noting that in some cases, such as with the jumping motion, the avatar raises its hands while jumping, but this hand-raising action is not accurately replicated in the generated video. There are two possible explanations for this discrepancy. First, most of the jumping actions in the training data may have been captured without the hand-raising component, leading the model to associate jumping primarily with non-hand-raising motions. Second, the model may not focus as effectively on arm details, as arms are typically thinner and less prominent compared to the body and legs.
+
+To further investigate the first reason, we sampled additional jumping videos from ModelScope (Wang et al. 2023a), as shown in Fig. 8. These results indicate that the generated videos predominantly focus on the lower body during the jumping motion. Even when we included prompt phrases like "full body" in the input, the resulting videos still failed to depict the avatar with raised arms during the jump. Moreover, when we explicitly prompted the model with "jumping with arms raised", the generated videos continued to emphasize the lower body, particularly the legs and feet. This suggests that the model struggles to accurately interpret and generate specific details related to certain actions, such as "jumping with arms raised", indicating a limitation in its understanding of such concepts. Additionally, the model also struggles with accurately controlling the number of people in the generated video, an issue that our proposed method effectively addresses.
+
+Camera Movement
+Refer to caption
+Figure 11: More Baseline Comparison Results.
+Refer to caption
+Figure 12: More Baseline Comparison Results.
+Refer to caption
+Figure 13: More Baseline Comparison Results.
+In Fig. 9, we demonstrate the effects of increased camera movement. It is important to note that while the movement in the generated video corresponds to the input condition, the outcome is not fully as desired. The avatar video is produced by rotating the camera around the avatar; however, the generated video interprets camera motion as human body motion while keeping the background static.
+
+This discrepancy suggests a potential future direction: enabling the network to comprehend and accurately represent camera movement in the output. One possible solution is to expose the network to the motion of the world floor, allowing it to implicitly learn camera movement. This would enable the input condition to fully control the camera’s motion in the generated video.
+
+Baseline
+In Fig. 11, Fig. 12, and Fig. 13, we present additional baseline results for the remaining three test cases. The results indicate that our method consistently produces higher-quality generated videos. In contrast, MagicAnimate (Xu et al. 2024b) exhibits issues, particularly in generating red regions. We believe this problem arises due to the input condition, where the region is too dark, leading to numerical issues. Since MagicAnimate is primarily trained on datasets with light backgrounds, its performance deteriorates in darker regions.
+
+Iterative Performance and Generalization
+In Fig. 10, we present the model’s performance on the test data across different training iterations. To evaluate the generalizability of the model, we also modify the background prompt to observe its performance under varying conditions. In the early stages of training, the model struggles to accurately follow the input motion condition. However, as training progresses, the model improves in aligning with the input motion. Conversely, as the number of iterations increases, the model faces the risk of gradually forgetting previously learned knowledge, which may hinder its generalization ability. In our experiments, we selected the model at iteration 60,000 for evaluation, as it represents a trade-off between accurate motion following and generalization.
+
+Metrics
+CLIP text similarity computes
+
+100
+∗
+𝐭
+⋅
+𝐢
+‖
+𝐭
+‖
+⁢
+‖
+𝐢
+‖
+where 
+𝐭
+ is the embedding vector for the text, 
+𝐢
+ is the embedding vector for the image, 
+𝐭
+⋅
+𝐢
+ is the dot product of the two vectors, 
+‖
+𝐭
+‖
+ and 
+‖
+𝐢
+‖
+ are the magnitudes (or Euclidean norms) of the text and image embedding vectors, respectively.
+
+Motion Fidelity Score is introduced in  (Yatim et al. 2024) as a metric to evaluate the similarity between tracklets in input and output videos using an off-the-shelf tracking method (Karaev et al. 2023). To estimate the sets of tracklets 
+𝒯
+=
+{
+τ
+1
+,
+…
+,
+τ
+n
+}
+ from the input video and 
+𝒯
+~
+=
+{
+τ
+~
+1
+,
+…
+,
+τ
+~
+m
+}
+ from the output video. Motion Fidelity Score is inspired by the Chamfer distance. This score is calculated by measuring the similarity between each tracklet in 
+𝒯
+ and its nearest neighbor in 
+𝒯
+~
+, and vice versa:
+
+1
+m
+⁢
+∑
+τ
+~
+∈
+𝒯
+~
+max
+τ
+∈
+𝒯
+⁡
+corr
+⁢
+(
+τ
+,
+τ
+~
+)
++
+1
+n
+⁢
+∑
+τ
+∈
+𝒯
+max
+τ
+~
+∈
+𝒯
+~
+⁡
+corr
+⁢
+(
+τ
+,
+τ
+~
+)
+The correlation between two tracklets, 
+corr
+⁢
+(
+τ
+,
+τ
+~
+)
+, is computed as:
+
+corr
+⁢
+(
+τ
+,
+τ
+~
+)
+=
+1
+F
+⁢
+∑
+k
+=
+1
+F
+v
+k
+x
+⋅
+v
+~
+k
+x
++
+v
+k
+y
+⋅
+v
+~
+k
+y
+(
+v
+k
+x
+)
+2
++
+(
+v
+k
+y
+)
+2
+⋅
+(
+v
+~
+k
+x
+)
+2
++
+(
+v
+~
+k
+y
+)
+2
+where 
+(
+v
+k
+x
+,
+v
+k
+y
+)
+ and 
+(
+v
+~
+k
+x
+,
+v
+~
+k
+y
+)
+ represent the 
+k
+th frame displacements of tracklets 
+τ
+ and 
+τ
+~
+, respectively.

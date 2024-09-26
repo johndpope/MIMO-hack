@@ -1,0 +1,576 @@
+License: CC BY 4.0
+arXiv:2408.16704v1 [cs.CV] 29 Aug 2024
+institutetext: Carnegie Mellon University
+One-Shot Learning Meets Depth Diffusion in Multi-Object Videos
+Anisha Jain
+Abstract
+Creating editable videos that depict complex interactions between multiple objects in various artistic styles has long been a challenging task in filmmaking. Progress is often hampered by the scarcity of data sets that contain paired text descriptions and corresponding videos that showcase these interactions. This paper introduces a novel depth-conditioning approach that significantly advances this field by enabling the generation of coherent and diverse videos from just a single text-video pair using a pre-trained depth-aware Text-to-Image (T2I) model. Our method fine-tunes the pre-trained model to capture continuous motion by employing custom-designed spatial and temporal attention mechanisms. During inference, we use the DDIM inversion to provide structural guidance for video generation. This innovative technique allows for continuously controllable depth in videos, facilitating the generation of multiobject interactions while maintaining the concept generation and compositional strengths of the original T2I model across various artistic styles, such as photorealism, animation, and impressionism.
+
+1Introduction
+Recent advances in text-to-image (T2I) models have showcased remarkable prowess in crafting lifelike images from textual prompts [21]. In order to replicate this achievement in Text-to-Video (T2V) synthesis, recent efforts [11, 8, 31, 23] have expanded spatial-only T2I models into the spatio-temporal realm. Typically, these models adhere to the conventional approach of training in large text-video corpora (e.g., WebVid-10M [1]). While producing promising outcomes in T2V synthesis, this methodology demands substantial training resources on robust hardware accelerators, incurring significant costs and time investments.
+
+Our daily interactions frequently involve multiple objects, and our engagement is often dictated by their relative spatial arrangements. For example, when driving, awareness of the positions of surrounding vehicles is vital. This task proves challenging due to the dynamic and interactive nature of objects in motion. To navigate such interactions effectively, we rely on estimating distances from objects and adjusting our actions accordingly, underscoring the pivotal role of depth perception.
+
+Given the ubiquitous nature of interactions with multiple objects, it becomes imperative to extend the capabilities of T2V models to generate videos featuring such interactions. This endeavor presents challenges due to the heightened temporal intricacies. Generating videos depicting multiple objects’ interactions demands the model’s comprehension of both spatial and temporal dynamics, ensuring coherent video synthesis amidst occlusions and increased complexity.
+
+In this study, our objective is to produce high-quality videos that illustrate object interactions. We propose an innovative one-shot training approach capable of generating cohesive videos depicting multiple objects engaging with each other. Our methodology is based on the foundation of a pre-trained depth-conditioned T2I model, as outlined in [21]. However, employing full spatiotemporal attention invariably results in a quadratic increase in computational complexity, rendering it impractical for generating videos with expanding frame counts. Furthermore, adopting a simplistic fine-tuning strategy that updates all parameters risks compromising the existing knowledge encoded within T2I models, thus impeding the generation of videos depicting novel concepts. To address these challenges, we introduce a sparse spatio-temporal attention mechanism, limiting visits to only the initial and preceding video frames. Additionally, we implement an efficient tuning strategy focused solely on updating the projection matrices within the attention blocks. Empirical evaluations demonstrate that these innovations maintain object consistency across frames, albeit with limited continuous motion. To overcome this limitation during inference, we use structure guidance from input videos through DDIM inversion, a process described in [24]. By initializing noise with the inverted latent information, we achieve temporally coherent videos characterized by fluid motion.
+
+In summary, our proposed approach excels in producing high-quality videos portraying object interactions by utilizing a one-shot training method that relies on just one text-video pair. Additionally, our model inherits the versatile composition skills from pre-trained T2I models, guaranteeing the creation of fresh ideas. Consequently, it can generate a variety of objects, backgrounds, and interactions while preserving consistency across frames. Moreover, our technique ensures smooth motion in the generated videos, resulting in the creation of temporally cohesive content.
+
+2Related Work
+Our focus revolves around the convergence of various disciplines: diffusion models and techniques for creating images/videos based on textual cues, text-guided manipulation of actual visual content, and generative models refined using a singular video data set. In this summary, we outline the notable achievements within each domain, emphasizing their correlations and distinctions compared to our proposed approach.
+
+2.1Text-to-Image Synthesis
+Research in Text-to-Image (T2I) generation has undergone extensive exploration, and many earlier models rely primarily on transformer architectures [20, 30, 3, 4, 29]. Recently, several T2I generative models [16, 22, 6, 21] have changed to using diffusion models [9]. For example, GLIDE [16] introduces classifier-free guidance within the diffusion model [10] to improve image fidelity, while DALLE-2 [19] improves text-image alignment by using CLIP’s feature space [18]. Imagen [8] employs cascaded diffusion models for high-definition video generation, and subsequent advances such as VQdiffusion [6] and Latent Diffusion Models (LDMs) [21] operate within the latent space of an auto-encoder to enhance training efficiency. LDMs have shown effectiveness in fine-tuning for conditioned outputs. Our approach extends upon depth-conditioned LDMs by extending the 2D model into the spatio-temporal domain within the latent space.
+
+2.2Text-to-Video Synthesis
+Creating realistic videos poses a significant challenge due to their intricate and high-dimensional structures. Initially, attention was paid to Generative Adversarial Networks (GANs) [5], which produce samples from a Gaussian distribution through a two-player game. However, GAN-based methods face training difficulties, especially with large datasets. Recent advances, leveraging large language models [18] and transformers [25], focus on generating videos from text descriptions. For example, Wu et al. [26] extend VQ-VAE [17] for text-to-video synthesis by mapping text tokens to video tokens. NÜWA [27] introduces an auto-regressive framework applicable to both text-to-image and video generation. Enhancements in video quality are achieved through approaches like CogVideo [12], which integrates temporal attention modules and pretrained text-to-image models for Text-to-Video (T2V) synthesis. The diffusion-based method gains traction, with Video Diffusion Models (VDM) [11] using a factorized space-time U-Net for direct pixel diffusion. Further refinements are seen in Imagen Video [8], which improves on VDM with cascaded diffusion models and parameterization for prediction. Similar progress is made by Make-A-Video [23] in extending diffusion-based models from text-to-image generation [21] to T2V synthesis. However, these models require extensive training on large video datasets, which limits their scalability and practicality. Another work, Tune-A-Video [28], extends image synthesis diffusion models to multi-object video generation by introducing depth conditioning and temporal connections into a pre-existing image model. But these models fail in generating videos with multiple objects and occlusions.
+
+2.3Depth-guided Image and Video Synthesis
+Employing a morphological diffusion-based technique [7], [2] presents an approach to seamlessly complete depth maps, ensuring smooth structural propagation across undesired regions. These inferred depth values then serve as a guide for filling in missing texture in the corresponding color image. Latent Diffusion Models (LDMs) [21] can be adapted to incorporate depth maps as conditioning variables, enabling the generation of high-resolution images.
+
+DVI [14] introduces a novel depth-guided video inpainting model that leverages depth maps to steer the inpainting process, synthesizing missing content by amalgamating information from multiple videos. Meanwhile, DCVGAN [15] is a depth-conditioned video generation model employing a conditional GAN architecture to produce videos from depth maps, trained on a dataset comprising paired depth maps and real-world videos. However, generative models face challenges during training. GD-VDM [13] adopts a two-phase generation strategy that involves the generation of depth videos followed by a new Vid2Vid diffusion model to produce coherent real-world videos, although it requires extensive training on large datasets.
+
+In line with the approach of Tune-A-Video [28], we extend image synthesis diffusion models to facilitate controllable multiobject video generation by incorporating depth conditioning and temporal connections into an existing image model.
+
+Refer to caption
+Figure 1:Using a text-video pair (for example, “a polar bear with her cubs”) as input, our approach utilizes pretrained depth-conditioned T2I diffusion models to generate T2V content. During fine-tuning, we update the projection matrices in attention blocks using the standard diffusion training loss and regularization.
+3Methodology
+Refer to caption
+Figure 2:During inference, we generate a new video by sampling from the latent noise inverted from the input video, using an edited prompt (e.g., “A tigress with her cubs in a forest”) as guidance.
+Our objective in the text-guided depth controllable video generation task is to produce lifelike videos using both a video sequence and textual descriptions of appearance as input. Our approach is based on the foundation of a pretrained depth-conditioned text-to-image model, specifically the latent diffusion model [21], with several customized adjustments to align with our task requirements. 3.1 provides a brief overview of the preliminary concepts, followed by a detailed explanation of our depth-guided text-to-video generation approach in LABEL:sec:_depth-guided.
+
+3.1Premilinary: Latent Diffusion Model
+Latent diffusion models (LDM) [21] represent a category of diffusion models that characterize the latent space distribution of images, showcasing notable advancements in image synthesis. This model comprises two main components: an autoencoder and a diffusion model. The autoencoder, composed of an encoder 
+ℰ
+ and a decoder 
+𝒟
+, is trained to reconstruct images. Specifically, the encoder projects the input images 
+x
+ into a lower-dimensional latent space: 
+z
+=
+ℰ
+⁢
+(
+x
+)
+, while the decoder reconstructs the original image from the latent space: 
+x
+~
+=
+𝒟
+⁢
+(
+z
+)
+. On the other hand, the diffusion model learns the distribution of the latent space of images 
+z
+0
+∼
+p
+data
+⁢
+(
+z
+0
+)
+ using the diffusion denoising probabilistic model (DDPM) [9] and generates new samples within the latent space.
+
+The generation process involves a gradual backward denoising process over 
+T
+ time steps, beginning from pure Gaussian noise 
+z
+T
+ and ending at a novel sample 
+z
+0
+. Mathematically, this process is defined as follows:
+
+T
+⁢
+p
+θ
+⁢
+(
+z
+0
+:
+T
+)
+:=
+p
+⁢
+(
+z
+T
+)
+⁢
+∏
+t
+=
+1
+T
+p
+θ
+⁢
+(
+z
+t
+−
+1
+|
+z
+t
+)
+,
+(1)
+where
+
+p
+θ
+⁢
+(
+z
+t
+−
+1
+|
+z
+t
+)
+:=
+𝒩
+⁢
+(
+z
+t
+−
+1
+;
+μ
+θ
+⁢
+(
+z
+t
+,
+t
+)
+,
+Σ
+θ
+⁢
+(
+z
+t
+,
+t
+)
+)
+.
+(2)
+Conversely, the Markov chain progresses through a gradual forward noising process using a predefined noise schedule 
+β
+1
+,
+…
+,
+β
+T
+, expressed as:
+
+T
+⁢
+q
+⁢
+(
+z
+1
+:
+T
+|
+z
+0
+)
+:=
+q
+⁢
+(
+z
+1
+|
+z
+0
+)
+⁢
+∏
+t
+=
+1
+T
+q
+⁢
+(
+z
+t
++
+1
+|
+z
+t
+)
+,
+(3)
+where
+
+q
+⁢
+(
+z
+t
++
+1
+|
+z
+t
+)
+:=
+𝒩
+⁢
+(
+z
+t
++
+1
+;
+(
+1
+−
+β
+t
+)
+⁢
+z
+t
+,
+β
+t
+⁢
+I
+)
+.
+(4)
+During each timestep, random noise 
+ϵ
+ is sampled from a diagonal Gaussian distribution, and a time-conditioned denoising model 
+θ
+ is trained to predict the added noise at each timestep using mean squared error (MSE) loss:
+
+L
+⁢
+(
+θ
+)
+:=
+|
+ϵ
+−
+ϵ
+θ
+⁢
+(
+z
+t
+,
+t
+)
+|
+2
+2
+.
+(5)
+3.2Depth-guided Text-to-Video Generation
+We utilize depth-conditioned LDM as the backbone for our text-guided depth controllable video generation task. Following a similar approach as [28], we expand the base model. This entails extending the 2D LDM to the spatio-temporal realm by transforming the 2D convolution layers into pseudo-3D convolution layers. Here, 
+3
+×
+3
+ kernels are replaced by 
+1
+×
+3
+×
+3
+ kernels, and we introduce a temporal self-attention layer within each transformer block for temporal modeling. To bolster temporal coherence, we introduce a sparse spatiotemporal attention mechanism that selectively focuses on initial and preceding video frames. During fine-tuning, we adopt a strategy that concentrates solely on updating the projection matrices within the attention blocks. This ensures retention of knowledge from the pretrained T2I model, facilitating the generation of innovative concepts.
+
+The spatiotemporal attention mechanism is devised to uphold temporal consistency by referencing pertinent positions in previous frames. Consequently, the key and value matrices remain fixed, with only the query matrices being updated during fine-tuning. Mathematically, the attention mechanism is expressed as follows.
+
+Attention
+⁢
+(
+Q
+,
+K
+,
+V
+)
+=
+softmax
+⁢
+(
+Q
+⁢
+K
+T
+d
+k
+)
+⁢
+V
+,
+(6)
+where 
+Q
+, 
+K
+, and 
+V
+ denote the query, key, and value matrices, respectively, and 
+d
+k
+ represents the dimensionality of the key vectors. These matrices are defined as follows.
+
+Q
+=
+W
+Q
+⁢
+z
+v
+i
+,
+K
+=
+W
+K
+⁢
+[
+z
+v
+1
+⁢
+z
+v
+i
+−
+1
+]
+,
+V
+=
+W
+V
+⁢
+[
+z
+v
+1
+⁢
+z
+v
+i
+−
+1
+]
+,
+(7)
+where 
+W
+Q
+, 
+W
+K
+, and 
+W
+V
+ are the projection matrices, and 
+z
+v
+i
+ denotes the latent representation of the current video frame, while 
+z
+v
+1
+ and 
+z
+v
+i
+−
+1
+ represent the latent representations of the first and previous video frames, respectively. In particular, the projection matrices are shared across spatial and temporal dimensions. Additionally, the newly introduced temporal self-attention layers are fully fine-tuned during training. To refine text-video alignment, the query projection matrix in cross-attention layers is updated during fine-tuning. This strategy of fine-tuning only the projection matrices within the attention blocks ensures retention of knowledge encoded within the pretrained T2I model, facilitating the generation of novel concepts.
+
+Loss and Regularization: We employ the same training objective as LDM, augmented with a temporal consistency loss to ensure smooth motion in the generated videos. The loss term is defined as:
+
+L
+temporal
+=
+∑
+i
+=
+1
+T
+−
+1
+|
+z
+v
+i
+−
+z
+v
+i
++
+1
+|
+2
+2
+,
+(8)
+where 
+T
+ represents the total number of video frames. This loss encourages the latent representations of consecutive video frames to be similar, thereby promoting smooth motion in the generated videos.
+
+Inference: During the inference phase, we employ DDIM inversion to provide structural guidance. We incorporate structural cues from the source video during inference. Specifically, we obtain a latent noise of the source video 
+𝒱
+ through DDIM inversion without textual conditions. This noise serves as the initial point for DDIM sampling, guided by an edited prompt 
+𝒯
+∗
+. The resulting video 
+𝒱
+∗
+ is then obtained as 
+𝒱
+∗
+=
+𝒟
+⁢
+(
+DDIM-samp
+⁢
+(
+DDIM-inv
+⁢
+(
+𝒱
+)
+,
+𝒯
+∗
+)
+)
+.
+
+Refer to caption
+Figure 3:Sample results of our method. The first row consists of images from the input sequence along with the text prompt. The rows below consist of images from generated sequences for the edited prompts for different styles and novelty.
+4Experiments
+4.1Implementation Details
+Our work utilizes Latent Diffusion Models [21] along with publicly available pre-trained weights 1
+1
+https://huggingface.co/stabilityai/stable-diffusion-2-depth
+. We extract 8-12 evenly spaced frames from the input video at a resolution of 512 × 512, and then fine-tune the models using our approach for 500 steps with a learning rate of 
+1
+×
+10
+−
+5
+ and a batch size of 1. During inference, we employ the DDIM sampler [24] and classifier-free guidance [10] in our tests. Fine-tuning a single video takes approximately 10 minutes, while sampling requires about 1 minute on an NVIDIA A100 GPU.
+
+4.2Qualitative Results
+We present a visual comparison of our proposed approach against two baselines, Tune-a-Video and CogVideo. The results of this work can be found in 4. The differences can be observed starkly with the results of our work, as in 5.
+
+Refer to caption
+Refer to caption
+Figure 4:On the left, Cog-Video produces undesirable results for human interactions with blurred faces and weird hands. While on the right, Tune-A-Video produces unpleasant results when the input video contains multiple objects and exhibits occlusions. For example, the two pandas at the bottom being mixed together.
+4.3Quantitative Comparison
+We evaluated our method against the baselines using automatic metrics and a user study, focusing on the consistency of the frames and the textual faithfulness, as detailed in 1.
+
+For automatic metrics, frame consistency was measured by computing CLIP[18] image embeddings for all video frames and reporting the average cosine similarity between frame pairs. Textual faithfulness was assessed by calculating the average CLIP score between video frames and their corresponding edited prompts. Our method outperformed the baselines, with CogVideo showing consistent frames but poor textual representation, and Tune-a-Video achieving high textual faithfulness but inconsistent content.
+
+Method	Frame Consistency	Textual Alignment
+CLIP Score	User Preference	CLIP Score	User Preference
+CogVideo	90.64	12.14	23.91	15.00
+Tune-A-Video	92.40	45.64	27.58	35.52
+Ours	94.73	90.63* / 74.87**	29.41	87.30* / 78.08**
+Table 1:Comparison of Methods for Frame Consistency and Textual Alignment. * indicates Ours vs Cog-Video, ** indicates Ours vs Tune-a-Video
+Refer to caption
+Figure 5:Some more results of our method. The first and third row show frames from the input sequence. The second and fourth row illustrate the frames from the respective generated sequences for the edited prompt.
+In the user study, participants were shown two videos (one from our method and one baseline) in random order and asked to select the one with better temporal consistency. For textual faithfulness, participants were shown the textual description and asked which video aligned better with it. Five participants rated each example, with the final result determined by majority vote. Our method was preferred over CogVideo and Tune-a-Video for both frame consistency and textual faithfulness.
+
+5Conclusion
+This work demonstrates that depth conditioning significantly enhances text-guided video generation using Latent Diffusion Models (LDM). Although previous research used LDMs for video generation, we found that depth conditioning improves the quality of videos, particularly in scenes with multiple interacting objects. By extending 2D LDMs to the spatio-temporal domain and incorporating pseudo 3D convolutions and temporal self-attention, we achieved better temporal coherence.
+
+Our fine-tuning strategy, updating only projection matrices, retains pretrained T2I model knowledge while generating novel concepts. The loss of temporal consistency ensures smooth motion and the DDIM inversion enhances video quality. Depth conditioning proves crucial for effective multi-object interaction modeling, representing a significant advancement in video generation. Future work will explore generation of longer videos with more complex scenes and improve model efficiency.
+
+References
+[1]
+Bain, M., Nagrani, A., Varol, G., Zisserman, A.: Frozen in time: A joint video and image encoder for end-to-end retrieval (2022)
+[2]
+Ciotta, M., Androutsos, D.: Depth guided image completion for structure and texture synthesis. In: 2016 IEEE International Conference on Acoustics, Speech and Signal Processing (ICASSP). pp. 1199–1203 (2016). https://doi.org/10.1109/ICASSP.2016.7471866
+[3]
+Ding, M., Zheng, W., Hong, W., Tang, J.: Cogview2: Faster and better text-to-image generation via hierarchical transformers (2022)
+[4]
+Gafni, O., Polyak, A., Ashual, O., Sheynin, S., Parikh, D., Taigman, Y.: Make-a-scene: Scene-based text-to-image generation with human priors (2022)
+[5]
+Goodfellow, I.J., Pouget-Abadie, J., Mirza, M., Xu, B., Warde-Farley, D., Ozair, S., Courville, A., Bengio, Y.: Generative adversarial networks (2014)
+[6]
+Gu, S., Chen, D., Bao, J., Wen, F., Zhang, B., Chen, D., Yuan, L., Guo, B.: Vector quantized diffusion model for text-to-image synthesis (2022)
+[7]
+Guo, H., Ono, N., Sagayama, S.: A structure-synthesis image inpainting algorithm based on morphological erosion operation. 2008 Congress on Image and Signal Processing 3, 530–535 (2008), https://api.semanticscholar.org/CorpusID:17003954
+[8]
+Ho, J., Chan, W., Saharia, C., Whang, J., Gao, R., Gritsenko, A., Kingma, D.P., Poole, B., Norouzi, M., Fleet, D.J., Salimans, T.: Imagen video: High definition video generation with diffusion models (2022)
+[9]
+Ho, J., Jain, A., Abbeel, P.: Denoising diffusion probabilistic models. arXiv preprint arxiv:2006.11239 (2020)
+[10]
+Ho, J., Salimans, T.: Classifier-free diffusion guidance (2022)
+[11]
+Ho, J., Salimans, T., Gritsenko, A., Chan, W., Norouzi, M., Fleet, D.J.: Video diffusion models (2022)
+[12]
+Hong, W., Ding, M., Zheng, W., Liu, X., Tang, J.: Cogvideo: Large-scale pretraining for text-to-video generation via transformers (2022)
+[13]
+Lapid, A., Achituve, I., Bracha, L., Fetaya, E.: Gd-vdm: Generated depth for better diffusion-based video generation (2023)
+[14]
+Liao, M., Lu, F., Zhou, D., Zhang, S., Li, W., Yang, R.: Dvi: Depth guided video inpainting for autonomous driving (2020)
+[15]
+Nakahira, Y., Kawamoto, K.: Dcvgan: Depth conditional video generation. In: 2019 IEEE International Conference on Image Processing (ICIP). pp. 749–753 (2019). https://doi.org/10.1109/ICIP.2019.8803764
+[16]
+Nichol, A., Dhariwal, P., Ramesh, A., Shyam, P., Mishkin, P., McGrew, B., Sutskever, I., Chen, M.: Glide: Towards photorealistic image generation and editing with text-guided diffusion models (2022)
+[17]
+van den Oord, A., Vinyals, O., Kavukcuoglu, K.: Neural discrete representation learning (2018)
+[18]
+Radford, A., Kim, J.W., Hallacy, C., Ramesh, A., Goh, G., Agarwal, S., Sastry, G., Askell, A., Mishkin, P., Clark, J., Krueger, G., Sutskever, I.: Learning transferable visual models from natural language supervision (2021)
+[19]
+Ramesh, A., Dhariwal, P., Nichol, A., Chu, C., Chen, M.: Hierarchical text-conditional image generation with clip latents (2022)
+[20]
+Ramesh, A., Pavlov, M., Goh, G., Gray, S., Voss, C., Radford, A., Chen, M., Sutskever, I.: Zero-shot text-to-image generation. In: Meila, M., Zhang, T. (eds.) Proceedings of the 38th International Conference on Machine Learning. Proceedings of Machine Learning Research, vol. 139, pp. 8821–8831. PMLR (18–24 Jul 2021)
+[21]
+Rombach, R., Blattmann, A., Lorenz, D., Esser, P., Ommer, B.: High-resolution image synthesis with latent diffusion models (2022)
+[22]
+Saharia, C., Chan, W., Saxena, S., Li, L., Whang, J., Denton, E., Ghasemipour, S.K.S., Ayan, B.K., Mahdavi, S.S., Lopes, R.G., Salimans, T., Ho, J., Fleet, D.J., Norouzi, M.: Photorealistic text-to-image diffusion models with deep language understanding (2022)
+[23]
+Singer, U., Polyak, A., Hayes, T., Yin, X., An, J., Zhang, S., Hu, Q., Yang, H., Ashual, O., Gafni, O., Parikh, D., Gupta, S., Taigman, Y.: Make-a-video: Text-to-video generation without text-video data (2022)
+[24]
+Song, J., Meng, C., Ermon, S.: Denoising diffusion implicit models (2022)
+[25]
+Vaswani, A., Shazeer, N., Parmar, N., Uszkoreit, J., Jones, L., Gomez, A.N., Kaiser, L., Polosukhin, I.: Attention is all you need (2023)
+[26]
+Wu, C., Huang, L., Zhang, Q., Li, B., Ji, L., Yang, F., Sapiro, G., Duan, N.: Godiva: Generating open-domain videos from natural descriptions (2021)
+[27]
+Wu, C., Liang, J., Ji, L., Yang, F., Fang, Y., Jiang, D., Duan, N.: Nüwa: Visual synthesis pre-training for neural visual world creation (2021)
+[28]
+Wu, J.Z., Ge, Y., Wang, X., Lei, W., Gu, Y., Shi, Y., Hsu, W., Shan, Y., Qie, X., Shou, M.Z.: Tune-a-video: One-shot tuning of image diffusion models for text-to-video generation (2023)
+[29]
+Yu, J., Li, X., Koh, J.Y., Zhang, H., Pang, R., Qin, J., Ku, A., Xu, Y., Baldridge, J., Wu, Y.: Vector-quantized image modeling with improved vqgan (2022)
+[30]
+Yu, J., Xu, Y., Koh, J.Y., Luong, T., Baid, G., Wang, Z., Vasudevan, V., Ku, A., Yang, Y., Ayan, B.K., Hutchinson, B., Han, W., Parekh, Z., Li, X., Zhang, H., Baldridge, J., Wu, Y.: Scaling autoregressive models for content-rich text-to-image generation (2022)
+[31]
+Zhou, D., Wang, W., Yan, H., Lv, W., Zhu, Y., Feng, J.: Magicvideo: Efficient video generation with latent diffusion models (2023)
