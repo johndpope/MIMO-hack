@@ -1,10 +1,21 @@
 import torch
 import torch.nn as nn
 import torch.optim as optim
-from torch.utils.data import DataLoader
+from torch.utils.data import DataLoader, Dataset
 import torchvision.models as models
 import clip
 from diffusers import UNet3DConditionModel
+import numpy as np
+from smplx import SMPL
+from pytorch3d.structures import Meshes
+from pytorch3d.renderer import (
+    PerspectiveCameras,
+    RasterizationSettings,
+    MeshRenderer,
+    MeshRasterizer,
+    SoftPhongShader,
+    TexturesVertex
+)
 
 # Placeholder functions for external modules
 def load_video(video_path):
@@ -35,13 +46,38 @@ class DifferentiableRasterizer(nn.Module):
     def __init__(self, image_size):
         super(DifferentiableRasterizer, self).__init__()
         self.image_size = image_size
+        self.raster_settings = RasterizationSettings(
+            image_size=image_size, 
+            blur_radius=0.0, 
+            faces_per_pixel=1
+        )
+        self.renderer = MeshRenderer(
+            rasterizer=MeshRasterizer(raster_settings=self.raster_settings),
+            shader=SoftPhongShader()
+        )
     
     def forward(self, vertices, faces, features):
-        # Placeholder for differentiable rasterizer (e.g., DIB-R)
-        # This should rasterize 3D mesh (vertices, faces) with per-vertex features
-        # to create a 2D feature map
         batch_size, num_vertices, _ = vertices.shape
-        return torch.randn(batch_size, features.shape[-1], self.image_size, self.image_size)
+        device = vertices.device
+
+        # Create a batch of meshes
+        meshes = Meshes(verts=vertices, faces=faces.expand(batch_size, -1, -1))
+        
+        # Create textures from features
+        textures = TexturesVertex(verts_features=features)
+        meshes.textures = textures
+
+        # Create dummy cameras (assuming orthographic projection for simplicity)
+        cameras = PerspectiveCameras(device=device, R=torch.eye(3).unsqueeze(0).expand(batch_size, -1, -1),
+                                     T=torch.zeros(batch_size, 3), fov=60)
+
+        # Render the meshes
+        rendered_images = self.renderer(meshes, cameras=cameras)
+        
+        # Extract the feature maps (discard alpha channel)
+        feature_maps = rendered_images[..., :features.shape[-1]]
+        
+        return feature_maps
 
 class StructuredMotionEncoder(nn.Module):
     def __init__(self, num_vertices, feature_dim, image_size):
@@ -50,6 +86,7 @@ class StructuredMotionEncoder(nn.Module):
         self.feature_dim = feature_dim
         self.latent_codes = nn.Parameter(torch.randn(num_vertices, feature_dim))
         self.rasterizer = DifferentiableRasterizer(image_size)
+        self.smpl = SMPL('path/to/smpl/model', batch_size=1)
         
         self.encoder = nn.Sequential(
             nn.Conv3d(feature_dim, 64, kernel_size=3, padding=1),
@@ -64,39 +101,50 @@ class StructuredMotionEncoder(nn.Module):
         )
     
     def forward(self, smpl_params, camera_params):
-        batch_size = smpl_params.shape[0]
-        num_frames = smpl_params.shape[1]
+        batch_size, num_frames, _ = smpl_params.shape
+        device = smpl_params.device
         
         # Expand latent codes for batch processing
-        expanded_codes = self.latent_codes.unsqueeze(0).expand(batch_size, -1, -1)
+        expanded_codes = self.latent_codes.unsqueeze(0).expand(batch_size * num_frames, -1, -1)
         
-        feature_maps = []
-        for t in range(num_frames):
-            # Transform latent codes based on SMPL parameters
-            vertices = self.transform_vertices(expanded_codes, smpl_params[:, t])
-            
-            # Project to 2D using camera parameters
-            projected_vertices = self.project_to_2d(vertices, camera_params[:, t])
-            
-            # Rasterize to create 2D feature maps
-            feature_map = self.rasterizer(projected_vertices, None, expanded_codes)
-            feature_maps.append(feature_map)
+        # Process SMPL parameters
+        smpl_params = smpl_params.view(-1, smpl_params.shape[-1])
+        smpl_output = self.smpl(
+            betas=smpl_params[:, :10],
+            body_pose=smpl_params[:, 10:72],
+            global_orient=smpl_params[:, 72:75],
+            pose2rot=False
+        )
+        vertices = smpl_output.vertices
+        faces = self.smpl.faces.unsqueeze(0).expand(batch_size * num_frames, -1, -1)
+
+        # Project to 2D using camera parameters
+        projected_vertices = self.project_to_2d(vertices, camera_params.view(-1, camera_params.shape[-1]))
         
-        # Stack feature maps along temporal dimension
-        feature_maps = torch.stack(feature_maps, dim=2)  # [B, C, T, H, W]
+        # Rasterize to create 2D feature maps
+        feature_maps = self.rasterizer(projected_vertices, faces, expanded_codes)
+        
+        # Reshape feature maps to include temporal dimension
+        feature_maps = feature_maps.view(batch_size, num_frames, self.feature_dim, self.rasterizer.image_size, self.rasterizer.image_size)
+        feature_maps = feature_maps.permute(0, 2, 1, 3, 4)  # [B, C, T, H, W]
         
         # Encode feature maps to motion code
         motion_code = self.encoder(feature_maps)
         
         return motion_code
     
-    def transform_vertices(self, codes, smpl_params):
-        # Placeholder: Transform vertices based on SMPL parameters
-        return codes
-    
     def project_to_2d(self, vertices, camera_params):
-        # Placeholder: Project 3D vertices to 2D using camera parameters
-        return vertices
+        # Simplified projection, assuming camera_params contains rotation and translation
+        R = camera_params[:, :9].view(-1, 3, 3)
+        T = camera_params[:, 9:12]
+        
+        # Apply rotation and translation
+        projected_vertices = torch.bmm(vertices, R.transpose(1, 2)) + T.unsqueeze(1)
+        
+        # Perspective division
+        projected_vertices = projected_vertices / projected_vertices[:, :, 2:]
+        
+        return projected_vertices
 
 class CanonicalIdentityEncoder(nn.Module):
     def __init__(self, clip_model):
@@ -145,10 +193,12 @@ class SceneOcclusionEncoder(nn.Module):
         return temporal_features.squeeze(-1).squeeze(-1).permute(0, 2, 1)
 
 class DiffusionDecoder(nn.Module):
-    def __init__(self):
+    def __init__(self, condition_dim):
         super(DiffusionDecoder, self).__init__()
         self.unet = UNet3DConditionModel(
-            block_out_channels=(128, 256, 512, 1024),
+            sample_size=(16, 64, 64),  # Adjust based on your video dimensions
+            in_channels=3,
+            out_channels=3,
             down_block_types=(
                 "DownBlock3D",
                 "DownBlock3D",
@@ -161,24 +211,13 @@ class DiffusionDecoder(nn.Module):
                 "UpBlock3D",
                 "UpBlock3D",
             ),
-            cross_attention_dim=1024,
+            block_out_channels=(128, 256, 512, 1024),
+            layers_per_block=2,
+            cross_attention_dim=condition_dim,
         )
         
-        self.motion_proj = nn.Linear(512, 1024)
-        self.scene_occlusion_proj = nn.Linear(1024, 1024)
-        
-    def forward(self, x, timesteps, identity_code, motion_code, scene_occlusion_code):
-        # Project motion and scene_occlusion codes
-        motion_code = self.motion_proj(motion_code)
-        scene_occlusion_code = self.scene_occlusion_proj(scene_occlusion_code)
-        
-        # Combine condition codes
-        condition = torch.cat([identity_code, motion_code, scene_occlusion_code], dim=1)
-        
-        # Apply U-Net
-        noise_pred = self.unet(x, timesteps, encoder_hidden_states=condition).sample
-        
-        return noise_pred
+    def forward(self, x, timesteps, condition):
+        return self.unet(x, timesteps, encoder_hidden_states=condition).sample
 
 class MIMOModel(nn.Module):
     def __init__(self, num_vertices, feature_dim, image_size):
@@ -189,7 +228,11 @@ class MIMOModel(nn.Module):
         self.identity_encoder = CanonicalIdentityEncoder(clip_model)
         
         self.scene_occlusion_encoder = SceneOcclusionEncoder()
-        self.decoder = DiffusionDecoder()
+        
+        condition_dim = 512 + 512 + 1024  # identity + motion + scene_occlusion
+        self.decoder = DiffusionDecoder(condition_dim)
+        
+        self.condition_proj = nn.Linear(condition_dim, condition_dim)
     
     def forward(self, noisy_frames, timesteps, identity_image, smpl_params, camera_params, scene_frames, occlusion_frames):
         identity_code = self.identity_encoder(identity_image)
@@ -198,7 +241,11 @@ class MIMOModel(nn.Module):
         occlusion_code = self.scene_occlusion_encoder(occlusion_frames)
         scene_occlusion_code = torch.cat([scene_code, occlusion_code], dim=-1)
         
-        noise_pred = self.decoder(noisy_frames, timesteps, identity_code, motion_code, scene_occlusion_code)
+        # Combine all condition codes
+        condition = torch.cat([identity_code, motion_code, scene_occlusion_code], dim=-1)
+        condition = self.condition_proj(condition)
+        
+        noise_pred = self.decoder(noisy_frames, timesteps, condition)
         return noise_pred
 
 def linear_beta_schedule(timesteps):
@@ -217,6 +264,51 @@ def forward_diffusion_sample(x_0, t, device):
     sqrt_alphas_cumprod_t = get_index_from_list(sqrt_alphas_cumprod, t, x_0.shape)
     sqrt_one_minus_alphas_cumprod_t = get_index_from_list(sqrt_one_minus_alphas_cumprod, t, x_0.shape)
     return sqrt_alphas_cumprod_t.to(device) * x_0.to(device) + sqrt_one_minus_alphas_cumprod_t.to(device) * noise.to(device), noise.to(device)
+
+class MIMODataset(Dataset):
+    def __init__(self, video_paths, identity_image_paths, smpl_params, camera_params):
+        self.video_paths = video_paths
+        self.identity_image_paths = identity_image_paths
+        self.smpl_params = smpl_params
+        self.camera_params = camera_params
+    
+    def __len__(self):
+        return len(self.video_paths)
+    
+    def __getitem__(self, idx):
+        video = load_video(self.video_paths[idx])
+        identity_image = load_video(self.identity_image_paths[idx])[0]  # Assuming it's a single frame
+        smpl_params = self.smpl_params[idx]
+        camera_params = self.camera_params[idx]
+        
+        # Compute depth maps
+        depth_maps = estimate_depth(video)
+        
+        # Detect and track humans
+        human_masks = detect_and_track_humans(video)
+        
+        # Compute masks for spatial decomposition
+        human_mask, scene_mask, occlusion_mask = compute_masks(depth_maps, human_masks)
+        
+        # Apply masks to get decomposed components
+        human_frames = video * human_mask
+        scene_frames = video * scene_mask
+        occlusion_frames = video * occlusion_mask
+        
+        # Inpaint scene frames
+        scene_frames = inpaint_scene(scene_frames)
+        
+        return {
+            'frames': video,
+            'identity_image': identity_image,
+            'smpl_params': smpl_params,
+            'camera_params': camera_params,
+            'human_frames': human_frames,
+            'scene_frames': scene_frames,
+            'occlusion_frames': occlusion_frames
+        }
+
+ ... (previous code remains the same)
 
 def train(model, dataloader, optimizer, num_epochs, device):
     for epoch in range(num_epochs):
@@ -241,11 +333,38 @@ def train(model, dataloader, optimizer, num_epochs, device):
         
         print(f"Epoch {epoch+1}/{num_epochs}, Loss: {loss.item():.4f}")
 
+def inference(model, identity_image, smpl_params, camera_params, scene_frames, occlusion_frames, device, timesteps):
+    model.eval()
+    with torch.no_grad():
+        # Start from random noise
+        x = torch.randn(1, 3, 16, 64, 64).to(device)  # Adjust shape based on your video dimensions
+        
+        # Reverse diffusion process
+        for i in reversed(range(timesteps)):
+            t = torch.full((1,), i, device=device, dtype=torch.long)
+            noise_pred = model(x, t, identity_image, smpl_params, camera_params, scene_frames, occlusion_frames)
+            
+            alpha = alphas[i]
+            alpha_bar = alphas_cumprod[i]
+            beta = betas[i]
+            
+            if i > 0:
+                noise = torch.randn_like(x)
+            else:
+                noise = torch.zeros_like(x)
+            
+            x = (1 / torch.sqrt(alpha)) * (x - ((1 - alpha) / (torch.sqrt(1 - alpha_bar))) * noise_pred) + torch.sqrt(beta) * noise
+    
+    return x
+
 # Hyperparameters
 num_vertices = 6890  # SMPL model has 6890 vertices
 feature_dim = 64
-image_size = 256
+image_size = 64
 timesteps = 1000
+batch_size = 4
+num_epochs = 50
+learning_rate = 1e-4
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 # Prepare beta schedule
@@ -258,33 +377,36 @@ sqrt_one_minus_alphas_cumprod = torch.sqrt(1. - alphas_cumprod)
 # Instantiate the model
 model = MIMOModel(num_vertices, feature_dim, image_size).to(device)
 
-# Assume we have a dataset class that provides the necessary data
-# dataset = MIMODataset(...)
-# dataloader = DataLoader(dataset, batch_size=4, shuffle=True)
+# Prepare dataset and dataloader
+# Assume we have the necessary data
+video_paths = [...]
+identity_image_paths = [...]
+smpl_params = [...]
+camera_params = [...]
 
-optimizer = optim.Adam(model.parameters(), lr=1e-4)
+dataset = MIMODataset(video_paths, identity_image_paths, smpl_params, camera_params)
+dataloader = DataLoader(dataset, batch_size=batch_size, shuffle=True)
+
+# Initialize optimizer
+optimizer = optim.Adam(model.parameters(), lr=learning_rate)
 
 # Train the model
-# train(model, dataloader, optimizer, num_epochs=50, device=device)
+train(model, dataloader, optimizer, num_epochs, device)
 
-# Inference (simplified)
-def generate_video(model, identity_image, smpl_params, camera_params, scene_frames, occlusion_frames, device):
-    model.eval()
-    with torch.no_grad():
-        x = torch.randn(1, 3, 16, image_size, image_size).to(device)  # 16 frames
-        timesteps = torch.arange(timesteps - 1, -1, -1).long().to(device)
-        for t in timesteps:
-            t_batch = torch.full((1,), t, device=device, dtype=torch.long)
-            noise_pred = model(x, t_batch, identity_image, smpl_params, camera_params, scene_frames, occlusion_frames)
-            alpha_t = alphas[t][:, None, None, None]
-            alpha_t_cumprod = alphas_cumprod[t][:, None, None, None]
-            beta_t = betas[t][:, None, None, None]
-            if t > 0:
-                noise = torch.randn_like(x)
-            else:
-                noise = torch.zeros_like(x)
-            x = (1 / torch.sqrt(alpha_t)) * (x - ((1 - alpha_t) / (torch.sqrt(1 - alpha_t_cumprod))) * noise_pred) + torch.sqrt(beta_t) * noise
-    return x
+# Save the trained model
+torch.save(model.state_dict(), 'mimo_model.pth')
 
-# Example usage:
-# generated_video = generate_video(model, identity_image, smpl_params, camera_params, scene_frames, occlusion_frames, device)
+# Example of inference
+# Load the trained model
+model.load_state_dict(torch.load('mimo_model.pth'))
+model.eval()
+
+# Prepare input data for inference
+identity_image = ...  # Load and preprocess identity image
+smpl_params = ...  # Prepare SMPL parameters for desired motion
+camera_params = ...  # Prepare camera parameters
+scene_frames = ...  # Prepare scene frames
+occlusion_frames = ...  # Prepare occlusion frames
+
+# Generate video
+generated_video = inference(model, identity_image, smpl_params, camera_params, scene_frames, occlusion_frames, device, timesteps)
