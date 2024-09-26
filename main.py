@@ -1,10 +1,10 @@
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 import torch.optim as optim
 from torch.utils.data import DataLoader, Dataset
 import torchvision.models as models
 import clip
-from diffusers import UNet3DConditionModel
 import numpy as np
 from smplx import SMPL
 from pytorch3d.structures import Meshes
@@ -16,31 +16,41 @@ from pytorch3d.renderer import (
     SoftPhongShader,
     TexturesVertex
 )
+from utils import load_video,estimate_depth,detect_and_track_humans,extract_pose,inpaint_scene,compute_masks
+from diffusers import UNet3DConditionModel, AutoencoderKL
+from diffusers.models.attention import BasicTransformerBlock
+from diffusers.models.unet_3d_blocks import DownBlock3D, UpBlock3D, CrossAttnDownBlock3D, CrossAttnUpBlock3D
+from diffusers import DDIMScheduler,DDPMScheduler
 
-# Placeholder functions for external modules
-def load_video(video_path):
-    # Load video frames as tensors
-    pass
 
-def estimate_depth(frames):
-    # Use a pre-trained monocular depth estimator (e.g., MiDaS)
-    pass
 
-def detect_and_track_humans(frames):
-    # Use a human detection and tracking algorithm (e.g., Detectron2)
-    pass
+class TemporalAttentionLayer(nn.Module):
+    def __init__(self, channels, num_head_channels, num_groups=32):
+        super().__init__()
+        self.norm = nn.GroupNorm(num_groups=num_groups, num_channels=channels)
+        self.attention = BasicTransformerBlock(channels, num_head_channels, attention_type="temporal")
 
-def extract_pose(frames):
-    # Use a pose estimation model (e.g., SMPL)
-    pass
+    def forward(self, x):
+        batch, channel, frames, height, width = x.shape
+        residual = x
+        x = self.norm(x)
+        x = x.view(batch, channel, frames, -1).permute(0, 2, 1, 3).contiguous()
+        x = x.view(batch * frames, channel, -1).transpose(1, 2)
+        x = self.attention(x)
+        x = x.transpose(1, 2).view(batch, frames, channel, -1).permute(0, 2, 1, 3)
+        x = x.view(batch, channel, frames, height, width)
+        return x + residual
 
-def inpaint_scene(scene_frames):
-    # Use a video inpainting method to fill in missing areas
-    pass
+class TemporalUNet3DConditionModel(UNet3DConditionModel):
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        
+        # Add temporal attention layers
+        for block in self.down_blocks + self.up_blocks:
+            if isinstance(block, (CrossAttnDownBlock3D, CrossAttnUpBlock3D)):
+                for layer in block.attentions:
+                    layer.transformer_blocks.append(TemporalAttentionLayer(layer.channels, layer.num_head_channels))
 
-def compute_masks(depth_maps, human_masks):
-    # Compute masks for human, scene, and occlusion layers based on depth
-    pass
 
 class DifferentiableRasterizer(nn.Module):
     def __init__(self, image_size):
@@ -192,36 +202,45 @@ class SceneOcclusionEncoder(nn.Module):
         temporal_features = self.temporal_conv(features)
         return temporal_features.squeeze(-1).squeeze(-1).permute(0, 2, 1)
 
+
 class DiffusionDecoder(nn.Module):
     def __init__(self, condition_dim):
-        super(DiffusionDecoder, self).__init__()
-        self.unet = UNet3DConditionModel(
+        super().__init__()
+        self.unet = TemporalUNet3DConditionModel(
             sample_size=(16, 64, 64),  # Adjust based on your video dimensions
-            in_channels=3,
-            out_channels=3,
+            in_channels=4,  # 4 channels for latent space
+            out_channels=4,
             down_block_types=(
+                "CrossAttnDownBlock3D",
+                "CrossAttnDownBlock3D",
+                "CrossAttnDownBlock3D",
                 "DownBlock3D",
-                "DownBlock3D",
-                "DownBlock3D",
-                "AttnDownBlock3D",
             ),
             up_block_types=(
-                "AttnUpBlock3D",
                 "UpBlock3D",
-                "UpBlock3D",
-                "UpBlock3D",
+                "CrossAttnUpBlock3D",
+                "CrossAttnUpBlock3D",
+                "CrossAttnUpBlock3D",
             ),
-            block_out_channels=(128, 256, 512, 1024),
+            block_out_channels=(320, 640, 1280, 1280),
             layers_per_block=2,
             cross_attention_dim=condition_dim,
+            attention_head_dim=8,
         )
+        self.vae = AutoencoderKL.from_pretrained("stabilityai/sd-vae-ft-mse")
         
     def forward(self, x, timesteps, condition):
         return self.unet(x, timesteps, encoder_hidden_states=condition).sample
-
+    
+    def encode(self, x):
+        return self.vae.encode(x).latent_dist.sample()
+    
+    def decode(self, x):
+        return self.vae.decode(x).sample
+    
 class MIMOModel(nn.Module):
     def __init__(self, num_vertices, feature_dim, image_size):
-        super(MIMOModel, self).__init__()
+        super().__init__()
         self.motion_encoder = StructuredMotionEncoder(num_vertices, feature_dim, image_size)
         
         clip_model, _ = clip.load("ViT-B/32", device="cpu")
@@ -234,7 +253,7 @@ class MIMOModel(nn.Module):
         
         self.condition_proj = nn.Linear(condition_dim, condition_dim)
     
-    def forward(self, noisy_frames, timesteps, identity_image, smpl_params, camera_params, scene_frames, occlusion_frames):
+    def forward(self, noisy_latents, timesteps, identity_image, smpl_params, camera_params, scene_frames, occlusion_frames):
         identity_code = self.identity_encoder(identity_image)
         motion_code = self.motion_encoder(smpl_params, camera_params)
         scene_code = self.scene_occlusion_encoder(scene_frames)
@@ -245,7 +264,7 @@ class MIMOModel(nn.Module):
         condition = torch.cat([identity_code, motion_code, scene_occlusion_code], dim=-1)
         condition = self.condition_proj(condition)
         
-        noise_pred = self.decoder(noisy_frames, timesteps, condition)
+        noise_pred = self.decoder(noisy_latents, timesteps, condition)
         return noise_pred
 
 def linear_beta_schedule(timesteps):
@@ -308,7 +327,8 @@ class MIMODataset(Dataset):
             'occlusion_frames': occlusion_frames
         }
 
- ... (previous code remains the same)
+noise_scheduler = DDPMScheduler(num_train_timesteps=1000)
+
 
 def train(model, dataloader, optimizer, num_epochs, device):
     for epoch in range(num_epochs):
@@ -322,40 +342,57 @@ def train(model, dataloader, optimizer, num_epochs, device):
             scene_frames = batch['scene_frames'].to(device)
             occlusion_frames = batch['occlusion_frames'].to(device)
             
-            t = torch.randint(0, timesteps, (x_0.shape[0],), device=device).long()
-            x_noisy, noise = forward_diffusion_sample(x_0, t, device)
+            # Encode frames to latent space
+            with torch.no_grad():
+                x_0_latent = model.decoder.encode(x_0)
             
-            noise_pred = model(x_noisy, t, identity_image, smpl_params, camera_params, scene_frames, occlusion_frames)
+            # Sample noise and timesteps
+            noise = torch.randn_like(x_0_latent)
+            timesteps = torch.randint(0, noise_scheduler.config.num_train_timesteps, (x_0_latent.shape[0],), device=device).long()
             
-            loss = nn.functional.mse_loss(noise, noise_pred)
+            # Add noise to latents
+            noisy_latents = noise_scheduler.add_noise(x_0_latent, noise, timesteps)
+            
+            # Predict noise
+            noise_pred = model(noisy_latents, timesteps, identity_image, smpl_params, camera_params, scene_frames, occlusion_frames)
+            
+            # Compute loss
+            loss = F.mse_loss(noise_pred, noise)
+            
             loss.backward()
             optimizer.step()
         
         print(f"Epoch {epoch+1}/{num_epochs}, Loss: {loss.item():.4f}")
 
-def inference(model, identity_image, smpl_params, camera_params, scene_frames, occlusion_frames, device, timesteps):
+def inference(model, identity_image, smpl_params, camera_params, scene_frames, occlusion_frames, device, num_inference_steps=50):
     model.eval()
     with torch.no_grad():
         # Start from random noise
-        x = torch.randn(1, 3, 16, 64, 64).to(device)  # Adjust shape based on your video dimensions
+        latents = torch.randn(1, 4, 16, 64, 64).to(device)  # Adjust shape based on your video dimensions
         
-        # Reverse diffusion process
-        for i in reversed(range(timesteps)):
-            t = torch.full((1,), i, device=device, dtype=torch.long)
-            noise_pred = model(x, t, identity_image, smpl_params, camera_params, scene_frames, occlusion_frames)
+        # Set up the noise scheduler
+        scheduler = DDIMScheduler(beta_start=0.00085, beta_end=0.012, beta_schedule="scaled_linear", num_train_timesteps=1000)
+        scheduler.set_timesteps(num_inference_steps)
+        
+        for t in scheduler.timesteps:
+            # Expand the latents for classifier-free guidance
+            latent_model_input = torch.cat([latents] * 2)
+            latent_model_input = scheduler.scale_model_input(latent_model_input, t)
             
-            alpha = alphas[i]
-            alpha_bar = alphas_cumprod[i]
-            beta = betas[i]
+            # Predict the noise residual
+            noise_pred = model(latent_model_input, t, identity_image, smpl_params, camera_params, scene_frames, occlusion_frames)
             
-            if i > 0:
-                noise = torch.randn_like(x)
-            else:
-                noise = torch.zeros_like(x)
+            # Perform guidance
+            noise_pred_uncond, noise_pred_text = noise_pred.chunk(2)
+            noise_pred = noise_pred_uncond + 7.5 * (noise_pred_text - noise_pred_uncond)
             
-            x = (1 / torch.sqrt(alpha)) * (x - ((1 - alpha) / (torch.sqrt(1 - alpha_bar))) * noise_pred) + torch.sqrt(beta) * noise
+            # Compute the previous noisy sample x_t -> x_t-1
+            latents = scheduler.step(noise_pred, t, latents).prev_sample
     
-    return x
+    # Decode the latents to pixel space
+    video = model.decoder.decode(latents)
+    
+    return video
 
 # Hyperparameters
 num_vertices = 6890  # SMPL model has 6890 vertices
