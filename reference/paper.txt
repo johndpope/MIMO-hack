@@ -1,0 +1,485 @@
+License: arXiv.org perpetual non-exclusive license
+arXiv:2409.16160v1 [cs.CV] 24 Sep 2024
+MIMO: Controllable Character Video Synthesis with Spatial Decomposed Modeling
+Yifang Men, Yuan Yao, Miaomiao Cui, Liefeng Bo
+Institute for Intelligent Computing, Alibaba Group
+https://menyifang.github.io/projects/MIMO/index.html
+Abstract
+Character video synthesis aims to produce realistic videos of animatable characters within lifelike scenes. As a fundamental problem in the computer vision and graphics community, 3D works typically require multi-view captures for per-case training, which severely limits their applicability of modeling arbitrary characters in a short time. Recent 2D methods break this limitation via pre-trained diffusion models, but they struggle for pose generality and scene interaction. To this end, we propose MIMO, a novel framework which can not only synthesize character videos with controllable attributes (i.e., character, motion and scene) provided by simple user inputs, but also simultaneously achieve advanced scalability to arbitrary characters, generality to novel 3D motions, and applicability to interactive real-world scenes in a unified framework. The core idea is to encode the 2D video to compact spatial codes, considering the inherent 3D nature of video occurrence. Concretely, we lift the 2D frame pixels into 3D using monocular depth estimators, and decompose the video clip to three spatial components (i.e., main human, underlying scene, and floating occlusion) in hierarchical layers based on the 3D depth. These components are further encoded to canonical identity code, structured motion code and full scene code, which are utilized as control signals of synthesis process. The design of spatial decomposed modeling enables flexible user control, complex motion expression, as well as 3D-aware synthesis for scene interactions. Experimental results demonstrate the proposed method’s effectiveness and robustness.
+
+[Uncaptioned image]
+Figure 1:Given a single reference character, MIMO can synthesize animated avatars in driving 3D poses retrieved from motion datasets (left) or extracted from in-the-wild videos (right). Real-world scenes from driving videos can also be integrated into the synthesis with natural human-object interactions. MIMO simultaneously achieves advanced scalability to arbitrary characters, generality to novel 3D motions, and applicability to interactive real-world scenes in a unified framework.
+1Introduction
+Character video synthesis, an essential topic in areas of Computer Vision and Computer Graphics, has huge potential applications for movie production, virtual reality, and animation. While recent video generative models [5, 6, 2, 28, 33, 11] have achieved great progress with text or image guidance, none of them fully captures the underlying attributes (e.g., appearance and motion of instance and scene) in a video and provides flexible user controls. Meanwhile, they still struggle for reasonable character synthesis in challenging scenarios, such as extreme 3D motions and complex object interactions accompanied by occlusions.
+
+The aim of this paper is to propose a brand-new and boosting method for controllable video synthesis, which can not only synthesize character videos with controllable attributes (i.e., character, motion and scene) provided by very simple user inputs, but also achieve advanced scalability to arbitrary characters, generality to novel 3D motions, and applicability to interactive real-world scenes in a unified framework (see Figure 1). In other words, the proposed method is capable of mimicking anyone anywhere with complex motions and object interactions, thus named MIMO. As more concretely illustrated in Figure 2, users are allowed to feed multiple inputs (e.g., a single image for character, a pose sequence for motion, and a single video/image for scene) to provide desired attributes respectively or a direct driving video as input. The proposed model can embed target attributes into the latent space to construct target codes or encode the driving video with spatial-aware decomposition as spatial codes, thus enabling intuitive attribute control of the synthesis by freely integrating latent codes in a specific order.
+
+Our task setting significantly decreases the cost of video creation and enables wide applications for not only character animation, but also video attribute editing (e.g., character replacement, motion transfer and scene insertion). However, it is extremely challenging due to the simplicity of user inputs, the complexity of real-world scenarios and the absence of annotation for 2D videos. With the great progress of 3D neural representations (e.g., NeRF [22] and 3D Gaussian splatting [12]), a series of works [23, 17, 27, 8, 15] tend to represent the dynamic human as a pose-conditioned NeRF or Gaussian to learn animatable avatars in high-fidelity rendering quality. However, they typically require fitting a neural field to multi-view captures or a monocular video of dynamic performers, which severely limits their applicability due to inefficient training and expensive data acquisition. Another 3D works explored faster and cheaper solutions by directly inferring 3D models from single human images, following by rigged animation and physical rendering [10, 9, 16, 21]. Unfortunately, the realism of the renderings is marginally compromised due to cumulative errors in sequential processes. Recently, several efforts [7, 30, 37, 26] have investigated the potential of 2D diffusion models on image guided character video synthesis. They show that high-fidelity character synthesis can be achieved by inserting image feature via a reference-net [7, 37] or control-net [30, 32] to a pretrained diffusion model. However, they only focus on character animation in simple 2D motions (e.g., frontal dancing) and are less effective for articulated human motion in 3D space with limited pose generality. Moreover, they fail to produce lifelike video with complicated scenes accompanied by human-object interactions. We argue that the cause for these difficulties stems from insufficient video attribute parser considered only in 2D feature space, thereby disregarding the inherent 3D nature of video occurrence.
+
+Refer to caption
+Figure 2: The basic idea of MIMO. Controllable character video synthesis with desired attributes provided by multiple inputs (e.g., a single image for character, a pose sequence for motion, and a single video/image for scene) or a driving video. Target attributes are embedded into the latent space as the target codes and the driving video is spatially decomposed as the spatial codes. Target character videos can be generated in user control with the combined attribute codes.
+Refer to caption
+Figure 3: An overview of the proposed framework. The video clip is decomposed to three spatial components (i.e., main human, underlying scene, and floating occlusion) in hierarchical layers based on 3D depth. The human component is further disentangled for properties of identity and motion via canonical appearance transfer and structured body codes, and encoded to identity code 
+𝒞
+i
+⁢
+d
+ and motion code 
+𝒞
+m
+⁢
+o
+. The scene and occlusion components are embedded with a shared VAE encoder and re-organized as a full scene code 
+𝒞
+s
+⁢
+o
+. These latent codes are inserted into a diffusion-based decoder as conditions for video reconstruction.
+To tackle these challenges, we propose a novel framework for controllable character video synthesis via spatial decomposed modeling. The core idea is to decompose and encode the 2D video in 3D-aware manner and employ more adequate expressions (e.g., 3D representations) for articulated properties. In contrast to previous works [7, 34] directly learn the whole 2D feature at each video frame, we lift the 2D frame pixels into 3D, and construct the decomposed spatial representations in 3D space, which are equipped with richer contextual information and can be used for control signals of synthesis process. Specifically, we decompose the video clip to three spatial components (scene, human and occlusion) in hierarchical layers based on 3D depth. In particular, human represents the main object in the video, scene represents the underlying background, and occlusion traces floating foreground objects. For the human component, we further disentangle the identity property via canonical appearance transfer and encode the 3D motion representation via structural body codes. The scene and occlusion components are embedded with a shared VAE encoder and re-organized as a full scene code. The decomposed latent codes are inserted as conditions of a diffusion-based decoder to reconstruction the video clip. In this way, the network learns not only controllable synthesis of various attributes, but also 3D-aware composition of main object, foreground and background. Thereby, it enables flexible user controls as well as challenging cases of complicated 3D motions and natural object interactions. In summary, our contributions are threefold:
+
+• We present a new approach capable of synthesizing realistic character videos with controllable attributes by directly providing simple user inputs, and simultaneously achieving advanced scalability, generality and applicability in a unified framework.
+• We propose the Spatial Decomposed Diffusion, a novel video generative model with automatic separation of spatial attributes, which enables not only flexible user control, but also 3D-aware synthesis for scene interactions.
+• We tackle the challenge of inadequate pose representation for articulated human by introducing structured body codes to express complex motions in spatial space, making an advanced generality to novel 3D motions.
+2Method Description
+Our goal is to synthesize high-quality character videos with user-controlled visual attributes, such as character, motion and scenes. The desired attributes can be automatically extracted from an in-the-wild character video or simply provided by a single image, a pose sequence, and a single video/image, respectively. Different from previous methods using only weak control signals (e.g., text prompt) [35, 19] or insufficient 2D expressions [7, 34], our model achieves automatic and unsupervised separation of spatial components and encodes them into compact latent codes considering inherent 3D nature to control the synthesis. Thus, our dataset can only contain 2D character videos 
+{
+v
+∈
+ℝ
+N
+×
+H
+×
+W
+}
+ without any annotations.
+
+The overview of the proposed framework is illustrated in Figure 3. Given a video clip 
+v
+, MIMO learns a reconstruction process with automatic attribute encoding and composed condition decoding. Considering 3D nature of video occurrence, we extract the three spatial components in hierarchical layers based on 3D depth (Section 2.1). The first component of human is encoded with disentangled properties of identity and motion (Section 2.2). The last two components of scene and occlusion are embedded with a shared encoder and re-organized as a latent code (Section 2.3). These latent codes 
+𝒞
+ are inserted into a diffusion decoder 
+𝒟
+ as composed conditions (Section 2.4). 
+𝒞
+, 
+𝒟
+ are jointly learned by minimizing the difference between the synthesized frames and input frames in noise level (Section 2.5).
+
+2.1Hierarchically spatial layer decomposition
+Considering the inherent 3D elements of video composition, we split a video 
+v
+=
+{
+ℐ
+t
+|
+t
+=
+1
+,
+…
+,
+N
+}
+ into three main components: human as a core performer, scene as the underlying background, and occluded object as the floating foreground. To automatically decompose them, we lift 2D pixels into 3D and track detected objects in hierarchical layers based on corresponding depth values.
+
+To start with, for each frame 
+ℐ
+t
+∈
+v
+, we obtain its monocular depth map using a pretrained monocular depth estimator [31]. The human layer is firstly extracted with human detection [29], and propagate to video volume via video tracking method [24], thus obtaining 
+ℳ
+h
+∈
+R
+N
+∗
+H
+∗
+W
+, a binary mask sequence along the time axis (i.e., masklet). Subsequently, we extract the occlusion layer with objects whose mean depth values are smaller than the human layer, and generate masklet predictions 
+ℳ
+o
+ via a video tracker. The scene layer can be obtained by removing human and occlusion objects, defined by scene masklet 
+ℳ
+s
+. With predicted masklets, we can compute the decomposed human video of component 
+i
+ by multiplying the original source video with component masklet 
+ℳ
+i
+:
+
+v
+i
+=
+v
+⊙
+ℳ
+i
+,
+i
+=
+{
+h
+,
+o
+,
+s
+}
+,
+(1)
+where 
+⊙
+ denotes element-wise product. 
+v
+i
+ is then fed into the corresponding branch for human, scene and occlusion encoding, respectively.
+
+2.2Disentangled human encoding
+This branch aims to encode the human component 
+v
+h
+ into the latent space as disentangled codes 
+𝒞
+i
+⁢
+d
+ and 
+𝒞
+m
+⁢
+o
+ of identity and motion. Previous works [7, 30, 34] typically random select one frame from the video clip as appearance representation, and employ extracted 2D skeleton with key-points as the pose representation. Essentially, this design exists two core issues which may limit networks’ performance: 1) It is hard for 2D pose to adequately express motions which take place in 3D spatial space, especially for articulated ones accompanied by exaggerated deformations and frequent self-occlusions. 2) The postures of frames across a video are highly similar, and there inevitably exists the entanglement between appearance frame and target frame both retrieved from the posed video. Thereby, we introduce new 3D representations of motion and identity for adequate expression and full disentanglement.
+
+Structured motion. We define a set of latent codes 
+𝒵
+=
+{
+z
+1
+,
+z
+2
+,
+…
+,
+z
+n
+⁢
+v
+}
+, and anchor them to corresponding vertices of a deformable human body model (SMPL) [18], where 
+n
+⁢
+v
+ is the number of vertices. For the frame 
+t
+, SMPL parameters 
+𝒮
+t
+ and camera parameters 
+𝒞
+t
+ are estimated from the monocular video frame 
+v
+t
+h
+ using [3]. The spatial locations of the latent codes are then transformed based on the human pose 
+𝒮
+t
+ and projected to the 2D plane based on the camera setting 
+𝒞
+t
+. Using a differentiable rasterizer [14] with vertex interpolation, the 2D feature map 
+ℱ
+t
+ in continuous values can be obtained. 
+{
+ℱ
+t
+,
+t
+=
+1
+,
+.
+.
+,
+N
+}
+ will be stacked along the time axis and embedded into the latent space as the motion code 
+𝒞
+m
+⁢
+o
+ by a pose encoder. In this way, we establish a correspondence that maps the same set of latent codes of underlying 3D body surface to the posed 2D renderings at different frames of arbitrary videos. This structured body codes enables more dense pose representation with 3D occlusions.
+
+Canonical identity. To fully disentangle the appearance from posed video frames, an ideal solution is to learn the dynamic human representation from the monocular video and transform it from the posed space to the canonical space. Considering the efficiency, we employ a simplified method that directly transforms the posed human image to the canonical result in standard A-pose using a pretrained human repose model. The synthesized canonical appearance image is fed to ID encoders to obtain the identity code 
+𝒞
+i
+⁢
+d
+. This simple design enables full disentanglement of identity and motion attributes. Following [7], the ID encoders include a CLIP image encoder and a reference-net architecture to embed for the global and local feature, respectively, which compose 
+𝒞
+i
+⁢
+d
+.
+
+2.3Scene and occlusion encoding
+In scene and occlusion branches, we use a shared and fixed VAE encoder [13] to embed the 
+v
+s
+ and 
+v
+o
+ into the latent space as the scene code 
+𝒞
+s
+ and occlusion code 
+𝒞
+o
+, respectively. Before 
+v
+s
+ input, we pre-recover it by a video inpainting method [36] for 
+ℛ
+⁢
+(
+v
+s
+)
+ to avoid the confusion brought by mask contours. Then the scene code 
+𝒞
+s
+ and the occlusion code 
+𝒞
+o
+ are concatenated together in order to get the full scene code 
+𝒞
+s
+⁢
+o
+ for composed synthesis. The independent encoding of spatial components (i.e., middle human, underlying scene, and floating occlusion) enable the network to learn an automatic layer composition, thus achieving natural character insertion in complicated scenes even with occluded object interactions.
+
+Refer to caption
+Figure 4:The architecture of the diffusion-based decoder.
+2.4Composed decoding
+Given the latent codes of decomposed attributes, we re-compose them as conditions of the diffusion-based decoder for video reconstruction. As shown in Figure 4, we adapt denoising U-Net backbone built upon Stable Diffusion (SD) [25] with temporal layers from [4]. The full scene code 
+𝒞
+s
+⁢
+o
+ is concatenated with the latent noise, and is fed into a 3D convolution layer for fusion and alignment. The motion code 
+𝒞
+m
+⁢
+o
+ is added to the fused feature and input to the denoising U-Net. For identity code 
+𝒞
+i
+⁢
+d
+, its local feature and global feature are inserted into the U-Net via self-attention layers and cross-attention layers, respectively. Finally, the denoised result is converted into the video clip 
+v
+^
+ via a pretrained VAE decoder [13].
+
+2.5Training
+We initialize the model of denoising U-Net and reference-net based on the pretrained weights from SD 1.5 [25], whereas the motion module is initialized with the weights of AnimateDiff [4]. During training, the weights of VAE encoder and decoder, as well as the CLIP image encoder are frozen. We optimize the denoising U-Net, pose encoder and reference-net with the diffusion noise-prediction loss:
+
+ℒ
+=
+𝔼
+x
+0
+,
+c
+i
+⁢
+d
+,
+c
+s
+⁢
+o
+,
+c
+m
+⁢
+o
+,
+t
+,
+ϵ
+∈
+𝒩
+⁢
+(
+0
+,
+1
+)
+⁢
+[
+‖
+ϵ
+−
+ϵ
+θ
+⁢
+(
+x
+t
+,
+c
+i
+⁢
+d
+,
+c
+s
+⁢
+o
+,
+c
+m
+⁢
+o
+,
+t
+)
+‖
+2
+2
+]
+(2)
+where 
+x
+0
+ is the augmented input sample, 
+t
+ denotes the diffusion timestep, 
+x
+t
+ is the noised sample at 
+t
+, and 
+ϵ
+θ
+ represents the function of the denoising UNet. We conduct the training on 8 NVIDIA A100 GPUs. It takes around 50k iterations with 24 video frames and a batch size of 4 for converge.
+
+3Experimental Results
+Dataset. We create a human video dataset called HUD-7K to train our model. This dataset consists of 
+5
+⁢
+K
+ real character videos and 
+2
+⁢
+K
+ synthetic character animations. The former does not require any annotations and can be automatically decomposed to various spatial attributes via our scheme. To enlarge the range of the real dataset, we also synthesize 
+2
+⁢
+K
+ videos by rendering character animations in complex motions under multiple camera views, utilizing En3D [21]. These synthetic videos are equipped with accurate annotations due to completely controlled production.
+
+Refer to caption
+Figure 5:Results of animating diverse characters from a single reference image.
+Refer to caption
+Figure 6: Results of synthesizing avatar animations with novel 3D motions, which are retrieved from the motion database or extracted from in-the-wild human videos.
+Refer to caption
+Figure 7:Results of synthesizing avatar animations with interactive scenes, which are extracted from in-the-wild videos.
+3.1Controllable character video synthesis
+Given the target attributes of character, motion and scene, our method can generate realistic video results with their latent codes combined for guided synthesis. The target attributes can be provided by simple user inputs (e.g., single images/videos for character/scene, pose sequences from large database [20, 1] for motion) or flexibly extracted from the real-world videos, involving complicated scenes of occluded object interactions and extreme articulated motions. In the following, MIMO demonstrates that it can simultaneously achieve advanced scalability to arbitrary characters, generality to novel 3D motions, and applicability to in-the-wild scenes in a unified framework.
+
+3.1.1Arbitrary character control
+As shown in Figure 5, our method can animate arbitrary characters, including realistic humans, cartoon characters and personified ones. Various body shapes of characters can be faithfully preserved due to the decoupled pose and shape parameters in our structured motion representation.
+
+3.1.2Novel 3D motion control
+To verify the generality to novel 3D motions, we test MIMO using challenging out-of-distribution pose sequences from the AMASS [20] and Mixamo [1] database, including dancing, playing and climbing (Figure 6 (a)). We also try complex spatial motions in 3D space by extracting them from in-the-wild human videos (Figure  6 (b)). Our method exhibits high robustness for these novel 3D motions under different viewpoints.
+
+3.1.3Interactive scene control
+We validate the applicability of our model to complicated real scenes by extracting scene and motion attributes from in-the-wild videos for character animation (i.e., the task of video character replacement). As shown in Figure 7, the character can be seamlessly inserted to the real scenes with natural object interactions, owing to our spatial-aware synthesis for hierarchical layers.
+
+4Conclusions
+In this paper, we presented MIMO, a novel framework for controllable character video synthesis, which allows for flexible user control with simple attribute inputs. Our method introduces a new generative architecture which decomposes the video clip to various spatial components, and embeds their latent codes as the condition of decoder to reconstruct the video clip. Experimental results demonstrated that our method enables not only flexible character, motion and scene control, but also advanced scalability to arbitrary characters, generality to novel 3D motions, and applicability to interactive scenes. We also believed that our solution, which considers inherent 3D nature and automatically encodes the 2D video to hierarchical spatial components could inspire future researches for 3D-aware video synthesis. Furthermore, our framework is not only well suited to generate character videos but also can be potentially adapted to other controllable video synthesis tasks.
+
+References
+[1]
+Mixamo.https://www.mixamo.com.
+Blattmann et al. [2023]
+Andreas Blattmann, Robin Rombach, Huan Ling, Tim Dockhorn, Seung Wook Kim, Sanja Fidler, and Karsten Kreis.Align your latents: High-resolution video synthesis with latent diffusion models.In Proceedings of the IEEE/CVF Conference on Computer Vision and Pattern Recognition, pages 22563–22575, 2023.
+Goel et al. [2023]
+Shubham Goel, Georgios Pavlakos, Jathushan Rajasegaran, Angjoo Kanazawa, and Jitendra Malik.Humans in 4d: Reconstructing and tracking humans with transformers.In Proceedings of the IEEE/CVF International Conference on Computer Vision, pages 14783–14794, 2023.
+Guo et al. [2023]
+Yuwei Guo, Ceyuan Yang, Anyi Rao, Zhengyang Liang, Yaohui Wang, Yu Qiao, Maneesh Agrawala, Dahua Lin, and Bo Dai.Animatediff: Animate your personalized text-to-image diffusion models without specific tuning.arXiv preprint arXiv:2307.04725, 2023.
+Ho et al. [2022]
+Jonathan Ho, Tim Salimans, Alexey Gritsenko, William Chan, Mohammad Norouzi, and David J Fleet.Video diffusion models.Advances in Neural Information Processing Systems, 35:8633–8646, 2022.
+Hong et al. [2022]
+Wenyi Hong, Ming Ding, Wendi Zheng, Xinghan Liu, and Jie Tang.Cogvideo: Large-scale pretraining for text-to-video generation via transformers.arXiv preprint arXiv:2205.15868, 2022.
+Hu [2024]
+Li Hu.Animate anyone: Consistent and controllable image-to-video synthesis for character animation.In Proceedings of the IEEE/CVF Conference on Computer Vision and Pattern Recognition, pages 8153–8163, 2024.
+Hu et al. [2024]
+Liangxiao Hu, Hongwen Zhang, Yuxiang Zhang, Boyao Zhou, Boning Liu, Shengping Zhang, and Liqiang Nie.Gaussianavatar: Towards realistic human avatar modeling from a single video via animatable 3d gaussians.In Proceedings of the IEEE/CVF Conference on Computer Vision and Pattern Recognition, pages 634–644, 2024.
+Huang et al. [2024]
+Yangyi Huang, Hongwei Yi, Yuliang Xiu, Tingting Liao, Jiaxiang Tang, Deng Cai, and Justus Thies.Tech: Text-guided reconstruction of lifelike clothed humans.In 2024 International Conference on 3D Vision (3DV), pages 1531–1542. IEEE, 2024.
+Huang et al. [2020]
+Zeng Huang, Yuanlu Xu, Christoph Lassner, Hao Li, and Tony Tung.Arch: Animatable reconstruction of clothed humans.In Proceedings of the IEEE/CVF Conference on Computer Vision and Pattern Recognition, pages 3093–3102, 2020.
+Karras et al. [2023]
+Johanna Karras, Aleksander Holynski, Ting-Chun Wang, and Ira Kemelmacher-Shlizerman.Dreampose: Fashion image-to-video synthesis via stable diffusion.In 2023 IEEE/CVF International Conference on Computer Vision (ICCV), pages 22623–22633. IEEE, 2023.
+Kerbl et al. [2023]
+Bernhard Kerbl, Georgios Kopanas, Thomas Leimkühler, and George Drettakis.3d gaussian splatting for real-time radiance field rendering.ACM Trans. Graph., 42(4):139–1, 2023.
+Kingma [2013]
+Diederik P Kingma.Auto-encoding variational bayes.arXiv preprint arXiv:1312.6114, 2013.
+Laine et al. [2020]
+Samuli Laine, Janne Hellsten, Tero Karras, Yeongho Seol, Jaakko Lehtinen, and Timo Aila.Modular primitives for high-performance differentiable rendering.ACM Transactions on Graphics, 39(6), 2020.
+Li et al. [2024]
+Zhe Li, Zerong Zheng, Lizhen Wang, and Yebin Liu.Animatable gaussians: Learning pose-dependent gaussian maps for high-fidelity human avatar modeling.In Proceedings of the IEEE/CVF Conference on Computer Vision and Pattern Recognition, pages 19711–19722, 2024.
+Liao et al. [2024]
+Tingting Liao, Hongwei Yi, Yuliang Xiu, Jiaxiang Tang, Yangyi Huang, Justus Thies, and Michael J Black.Tada! text to animatable digital avatars.In 2024 International Conference on 3D Vision (3DV), pages 1508–1519. IEEE, 2024.
+Liu et al. [2021]
+Lingjie Liu, Marc Habermann, Viktor Rudnev, Kripasindhu Sarkar, Jiatao Gu, and Christian Theobalt.Neural actor: Neural free-view synthesis of human actors with pose control.ACM transactions on graphics (TOG), 40(6):1–16, 2021.
+Loper et al. [2015]
+Matthew Loper, Naureen Mahmood, Javier Romero, Gerard Pons-Moll, and Michael J. Black.SMPL: A skinned multi-person linear model.ACM Trans. Graphics (Proc. SIGGRAPH Asia), 34(6):248:1–248:16, 2015.
+Ma et al. [2024]
+Yue Ma, Yingqing He, Xiaodong Cun, Xintao Wang, Siran Chen, Xiu Li, and Qifeng Chen.Follow your pose: Pose-guided text-to-video generation using pose-free videos.In Proceedings of the AAAI Conference on Artificial Intelligence, pages 4117–4125, 2024.
+Mahmood et al. [2019]
+Naureen Mahmood, Nima Ghorbani, Nikolaus F Troje, Gerard Pons-Moll, and Michael J Black.Amass: Archive of motion capture as surface shapes.In Proceedings of the IEEE/CVF international conference on computer vision, pages 5442–5451, 2019.
+Men et al. [2024]
+Yifang Men, Biwen Lei, Yuan Yao, Miaomiao Cui, Zhouhui Lian, and Xuansong Xie.En3d: An enhanced generative model for sculpting 3d humans from 2d synthetic data.In Proceedings of the IEEE/CVF Conference on Computer Vision and Pattern Recognition, pages 9981–9991, 2024.
+Mildenhall et al. [2021]
+Ben Mildenhall, Pratul P Srinivasan, Matthew Tancik, Jonathan T Barron, Ravi Ramamoorthi, and Ren Ng.Nerf: Representing scenes as neural radiance fields for view synthesis.Communications of the ACM, 65(1):99–106, 2021.
+Peng et al. [2021]
+Sida Peng, Junting Dong, Qianqian Wang, Shangzhan Zhang, Qing Shuai, Xiaowei Zhou, and Hujun Bao.Animatable neural radiance fields for modeling dynamic human bodies.In Proceedings of the IEEE/CVF International Conference on Computer Vision, pages 14314–14323, 2021.
+Ravi et al. [2024]
+Nikhila Ravi, Valentin Gabeur, Yuan-Ting Hu, Ronghang Hu, Chaitanya Ryali, Tengyu Ma, Haitham Khedr, Roman Rädle, Chloe Rolland, Laura Gustafson, et al.Sam 2: Segment anything in images and videos.arXiv preprint arXiv:2408.00714, 2024.
+Rombach et al. [2021]
+Robin Rombach, Andreas Blattmann, Dominik Lorenz, Patrick Esser, and Björn Ommer.High-resolution image synthesis with latent diffusion models, 2021.
+Wang et al. [2024]
+Tan Wang, Linjie Li, Kevin Lin, Yuanhao Zhai, Chung-Ching Lin, Zhengyuan Yang, Hanwang Zhang, Zicheng Liu, and Lijuan Wang.Disco: Disentangled control for realistic human dance generation.In Proceedings of the IEEE/CVF Conference on Computer Vision and Pattern Recognition, pages 9326–9336, 2024.
+Weng et al. [2022]
+Chung-Yi Weng, Brian Curless, Pratul P Srinivasan, Jonathan T Barron, and Ira Kemelmacher-Shlizerman.Humannerf: Free-viewpoint rendering of moving people from monocular video.In Proceedings of the IEEE/CVF conference on computer vision and pattern Recognition, pages 16210–16220, 2022.
+Wu et al. [2023]
+Jay Zhangjie Wu, Yixiao Ge, Xintao Wang, Stan Weixian Lei, Yuchao Gu, Yufei Shi, Wynne Hsu, Ying Shan, Xiaohu Qie, and Mike Zheng Shou.Tune-a-video: One-shot tuning of image diffusion models for text-to-video generation.In Proceedings of the IEEE/CVF International Conference on Computer Vision, pages 7623–7633, 2023.
+Wu et al. [2019]
+Yuxin Wu, Alexander Kirillov, Francisco Massa, Wan-Yen Lo, and Ross Girshick.Detectron2.https://github.com/facebookresearch/detectron2, 2019.
+Xu et al. [2024]
+Zhongcong Xu, Jianfeng Zhang, Jun Hao Liew, Hanshu Yan, Jia-Wei Liu, Chenxu Zhang, Jiashi Feng, and Mike Zheng Shou.Magicanimate: Temporally consistent human image animation using diffusion model.In Proceedings of the IEEE/CVF Conference on Computer Vision and Pattern Recognition, pages 1481–1490, 2024.
+Yang et al. [2024]
+Lihe Yang, Bingyi Kang, Zilong Huang, Xiaogang Xu, Jiashi Feng, and Hengshuang Zhao.Depth anything: Unleashing the power of large-scale unlabeled data.In Proceedings of the IEEE/CVF Conference on Computer Vision and Pattern Recognition, pages 10371–10381, 2024.
+Zhang et al. [2023a]
+Lvmin Zhang, Anyi Rao, and Maneesh Agrawala.Adding conditional control to text-to-image diffusion models.In Proceedings of the IEEE/CVF International Conference on Computer Vision, pages 3836–3847, 2023a.
+Zhang et al. [2023b]
+Shiwei Zhang, Jiayu Wang, Yingya Zhang, Kang Zhao, Hangjie Yuan, Zhiwu Qin, Xiang Wang, Deli Zhao, and Jingren Zhou.I2vgen-xl: High-quality image-to-video synthesis via cascaded diffusion models.arXiv preprint arXiv:2311.04145, 2023b.
+Zhang et al. [2024]
+Yuang Zhang, Jiaxi Gu, Li-Wen Wang, Han Wang, Junqi Cheng, Yuefeng Zhu, and Fangyuan Zou.Mimicmotion: High-quality human motion video generation with confidence-aware pose guidance.arXiv preprint arXiv:2406.19680, 2024.
+Zhao et al. [2023]
+Yuyang Zhao, Enze Xie, Lanqing Hong, Zhenguo Li, and Gim Hee Lee.Make-a-protagonist: Generic video editing with an ensemble of experts.arXiv preprint arXiv:2305.08850, 2023.
+Zhou et al. [2023]
+Shangchen Zhou, Chongyi Li, Kelvin CK Chan, and Chen Change Loy.Propainter: Improving propagation and transformer for video inpainting.In Proceedings of the IEEE/CVF International Conference on Computer Vision, pages 10477–10486, 2023.
+Zhu et al. [2024]
+Shenhao Zhu, Junming Leo Chen, Zuozhuo Dai, Yinghui Xu, Xun Cao, Yao Yao, Hao Zhu, and Siyu Zhu.Champ: Controllable and consistent human image animation with 3d parametric guidance.arXiv preprint arXiv:2403.14781, 2024.
