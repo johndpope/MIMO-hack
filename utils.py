@@ -11,12 +11,73 @@ from detectron2.engine import DefaultPredictor
 from detectron2.config import get_cfg
 from smplx import SMPL
 from torchvision.models.segmentation import deeplabv3_resnet50
+from torchvision import transforms
+import os 
 
 def load_video(video_path):
     """Load video frames as tensors."""
     frames, _, _ = read_video(video_path)
     frames = frames.permute(0, 3, 1, 2).float() / 255.0  # [T, C, H, W]
     return frames
+
+
+def load_sapiens_model(model_size="1b", device="cuda"):
+    CHECKPOINTS_DIR = '/path/to/sapiens/checkpoints'  # Update this path
+    CHECKPOINTS = {
+        "0.3b": "sapiens_0.3b_render_people_epoch_100_torchscript.pt2",
+        "0.6b": "sapiens_0.6b_render_people_epoch_70_torchscript.pt2",
+        "1b": "sapiens_1b_render_people_epoch_88_torchscript.pt2",
+        "2b": "sapiens_2b_render_people_epoch_25_torchscript.pt2",
+    }
+    checkpoint_path = os.path.join(CHECKPOINTS_DIR, CHECKPOINTS[model_size])
+    model = torch.jit.load(checkpoint_path)
+    model.eval()
+    return model.to(device)
+
+def estimate_depth(frames, model_size="1b", use_background_removal=False):
+    """Use Sapiens pre-trained depth estimator."""
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    model = load_sapiens_model(model_size, device)
+    
+    if use_background_removal:
+        seg_model = load_sapiens_model("fg-bg-1b", device)  # Load segmentation model
+    
+    transform = transforms.Compose([
+        transforms.Resize((1024, 768)),
+        transforms.ToTensor(),
+        transforms.Normalize(mean=[123.5/255, 116.5/255, 103.5/255], 
+                             std=[58.5/255, 57.0/255, 57.5/255])
+    ])
+    
+    depth_maps = []
+    for frame in frames:
+        # Preprocess
+        frame_np = (frame.permute(1, 2, 0).numpy() * 255).astype(np.uint8)
+        frame_pil = Image.fromarray(frame_np)
+        frame_input = transform(frame_pil).unsqueeze(0).to(device)
+        
+        # Inference
+        with torch.no_grad():
+            depth = model(frame_input)
+        
+        # Resize back to original size
+        depth = torch.nn.functional.interpolate(
+            depth, size=frame.shape[1:], mode="bilinear", align_corners=False
+        ).squeeze()
+        
+        if use_background_removal:
+            with torch.no_grad():
+                seg_output = seg_model(frame_input)
+            seg_mask = (seg_output.argmax(dim=1) > 0).float()
+            seg_mask = torch.nn.functional.interpolate(
+                seg_mask.unsqueeze(1), size=frame.shape[1:], mode="nearest"
+            ).squeeze()
+            depth[seg_mask == 0] = float('nan')
+        
+        depth_maps.append(depth)
+    
+    return torch.stack(depth_maps)
+
 
 def estimate_depth(frames):
     """Use a pre-trained monocular depth estimator (MiDaS)."""
