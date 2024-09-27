@@ -1,3 +1,9 @@
 mmdet
 mmcv
 detectron2
+torch
+torchvision 
+pytorch3d
+clip
+SMPL
+diffusers
