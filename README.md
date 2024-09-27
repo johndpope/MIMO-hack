@@ -1,6 +1,11 @@
 # MIMO-hack
 
 
+current goal is to load a video 
+process frames 
+ - get the depths / normals / poses
+rip out the target avatar - use LAMA to do inpainting
+
 
 
 
@@ -16,9 +21,17 @@ These synthetic videos are equipped with accurate annotations due to completely 
 https://github.com/menyifang/En3D
 
 
+
+## Sapiens - get image - produce depths / normals / pose
+https://github.com/facebookresearch/sapiens
 ```shell
 python pose_vis.py '/home/oem/Desktop/image_1.png'  test.png output.json
 python normal_vis.py '/home/oem/Desktop/image_1.png'  test.png 
 python depth_estimation.py input_image.png output_depth_image.png output_depth_map.npy --depth_model 1b --seg_model fg-bg-1b
 
 ```
+
+
+## LAMA - SOTA inpainting 
+https://github.com/advimman/lama
+

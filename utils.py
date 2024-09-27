@@ -13,6 +13,8 @@ from smplx import SMPL
 from torchvision.models.segmentation import deeplabv3_resnet50
 from torchvision import transforms
 import os 
+from omegaconf import OmegaConf
+from typing import List, Tuple
 
 def load_video(video_path):
     """Load video frames as tensors."""
@@ -190,3 +192,25 @@ def compute_masks(depth_maps, human_masks):
 # scene_frames = frames * (~human_masks.bool()).float().unsqueeze(1)
 # inpainted_scene = inpaint_scene(scene_frames)
 # human_mask, scene_mask, occlusion_mask = compute_masks(depth_maps, human_masks)
+
+
+def process_video(video_path: str, config_path: str, checkpoint_path: str) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+    frames = load_video(video_path)
+    depth_maps = estimate_depth(frames)
+    human_masks = detect_and_track_humans(frames)
+    
+    human_mask, scene_mask, occlusion_mask = compute_masks(depth_maps, human_masks)
+    
+    # Areas to be inpainted are where the human or occlusion masks are 1
+    inpainting_mask = human_mask | occlusion_mask
+    
+    scene_frames = frames * (~inpainting_mask)
+    inpainted_scene = inpaint_scene(scene_frames, inpainting_mask, config_path, checkpoint_path)
+    
+    return inpainted_scene, human_mask * frames, occlusion_mask * frames
+
+# Usage
+video_path = "path/to/your/video.mp4"
+config_path = "path/to/lama/config.yaml"
+checkpoint_path = "path/to/lama/checkpoint.pth"
+inpainted_scene, human_video, occlusion_video = process_video(video_path, config_path, checkpoint_path)
