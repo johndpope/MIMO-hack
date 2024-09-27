@@ -21,7 +21,7 @@ from diffusers import UNet3DConditionModel, AutoencoderKL
 from diffusers.models.attention import BasicTransformerBlock
 from diffusers.models.unet_3d_blocks import DownBlock3D, UpBlock3D, CrossAttnDownBlock3D, CrossAttnUpBlock3D
 from diffusers import DDIMScheduler,DDPMScheduler
-
+from MimoDataset import MIMODataset
 
 
 class TemporalAttentionLayer(nn.Module):
@@ -285,63 +285,7 @@ def forward_diffusion_sample(x_0, t, device):
     return sqrt_alphas_cumprod_t.to(device) * x_0.to(device) + sqrt_one_minus_alphas_cumprod_t.to(device) * noise.to(device), noise.to(device)
 
 
-from torch.utils.data import Dataset
-from typing import List, Dict, Any
-from lama import LAMAInpaintingModule, inpaint_scene
 
-class MIMODataset(Dataset):
-    def __init__(self, video_paths: List[str], identity_image_paths: List[str], 
-                 smpl_params: List[Any], camera_params: List[Any],
-                 config_path: str, checkpoint_path: str):
-        self.video_paths = video_paths
-        self.identity_image_paths = identity_image_paths
-        self.smpl_params = smpl_params
-        self.camera_params = camera_params
-        self.config_path = config_path
-        self.checkpoint_path = checkpoint_path
-        
-        # Initialize LAMA inpainting module
-        self.lama_module = LAMAInpaintingModule(config_path, checkpoint_path)
-    
-    def __len__(self) -> int:
-        return len(self.video_paths)
-    
-    def __getitem__(self, idx: int) -> Dict[str, torch.Tensor]:
-        video = load_video(self.video_paths[idx])
-        identity_image = load_video(self.identity_image_paths[idx])[0]  # Assuming it's a single frame
-        smpl_params = self.smpl_params[idx]
-        camera_params = self.camera_params[idx]
-        
-        # Compute depth maps
-        depth_maps = estimate_depth(video)
-        
-        # Detect and track humans
-        human_masks = detect_and_track_humans(video)
-        
-        # Compute masks for spatial decomposition
-        human_mask, scene_mask, occlusion_mask = compute_masks(depth_maps, human_masks)
-        
-        # Apply masks to get decomposed components
-        human_frames = video * human_mask
-        scene_frames = video * scene_mask
-        occlusion_frames = video * occlusion_mask
-        
-        # Inpaint scene frames using LAMA
-        inpainting_mask = human_mask | occlusion_mask
-        scene_frames = inpaint_scene(scene_frames, inpainting_mask, self.config_path, self.checkpoint_path)
-        
-        return {
-            'frames': video,
-            'identity_image': identity_image,
-            'smpl_params': smpl_params,
-            'camera_params': camera_params,
-            'human_frames': human_frames,
-            'scene_frames': scene_frames,
-            'occlusion_frames': occlusion_frames,
-            'human_mask': human_mask,
-            'scene_mask': scene_mask,
-            'occlusion_mask': occlusion_mask
-        }
 
 noise_scheduler = DDPMScheduler(num_train_timesteps=1000)
 

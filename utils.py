@@ -1,5 +1,6 @@
 import torch
 import torchvision
+import torch.nn.functional as F
 import cv2
 import numpy as np
 from PIL import Image
