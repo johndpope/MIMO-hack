@@ -15,6 +15,9 @@ from torchvision import transforms
 import os 
 from omegaconf import OmegaConf
 from typing import List, Tuple
+from skimage.measure import label
+import numpy as np
+
 
 def load_video(video_path):
     """Load video frames as tensors."""
@@ -36,7 +39,7 @@ def load_sapiens_model(model_size="1b", device="cuda"):
     model.eval()
     return model.to(device)
 
-def estimate_depth(frames, model_size="1b", use_background_removal=False):
+def estimate_depth_sapien(frames, model_size="1b", use_background_removal=False):
     """Use Sapiens pre-trained depth estimator."""
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     model = load_sapiens_model(model_size, device)
@@ -167,21 +170,73 @@ def inpaint_scene(scene_frames):
     
     return torch.stack(inpainted_frames)
 
-def compute_masks(depth_maps, human_masks):
-    """Compute masks for human, scene, and occlusion layers based on depth."""
+def compute_masks(depth_maps: torch.Tensor, human_masks: torch.Tensor, 
+                  depth_threshold: float = 0.5, 
+                  smoothing_kernel_size: int = 5, 
+                  min_area_ratio: float = 0.01) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+    """
+    Compute masks for human, scene, and occlusion layers based on depth.
+
+    Args:
+        depth_maps (torch.Tensor): Depth maps of shape [B, H, W]
+        human_masks (torch.Tensor): Human masks of shape [B, H, W]
+        depth_threshold (float): Threshold for separating foreground and background
+        smoothing_kernel_size (int): Size of the kernel for smoothing masks
+        min_area_ratio (float): Minimum area ratio to keep a connected component
+
+    Returns:
+        Tuple[torch.Tensor, torch.Tensor, torch.Tensor]: Human, scene, and occlusion masks
+    """
     device = depth_maps.device
     batch_size, height, width = depth_maps.shape
-    
+
     # Normalize depth maps
-    normalized_depth = (depth_maps - depth_maps.min()) / (depth_maps.max() - depth_maps.min())
-    
-    # Compute scene mask (areas with no human and farther depth)
-    scene_mask = (~human_masks.bool()) & (normalized_depth > 0.5)
-    
-    # Compute occlusion mask (areas with no human and closer depth)
-    occlusion_mask = (~human_masks.bool()) & (normalized_depth <= 0.5)
-    
+    normalized_depth = (depth_maps - depth_maps.min(dim=(1,2), keepdim=True).values) / \
+                       (depth_maps.max(dim=(1,2), keepdim=True).values - depth_maps.min(dim=(1,2), keepdim=True).values)
+
+    # Compute initial scene and occlusion masks
+    scene_mask = (~human_masks.bool()) & (normalized_depth > depth_threshold)
+    occlusion_mask = (~human_masks.bool()) & (normalized_depth <= depth_threshold)
+
+    # Smooth masks
+    smoothing_kernel = torch.ones(1, 1, smoothing_kernel_size, smoothing_kernel_size, device=device) / (smoothing_kernel_size ** 2)
+    scene_mask = F.conv2d(scene_mask.float().unsqueeze(1), smoothing_kernel, padding=smoothing_kernel_size//2).squeeze(1) > 0.5
+    occlusion_mask = F.conv2d(occlusion_mask.float().unsqueeze(1), smoothing_kernel, padding=smoothing_kernel_size//2).squeeze(1) > 0.5
+
+    # Remove small connected components
+    scene_mask = remove_small_components(scene_mask, min_area_ratio)
+    occlusion_mask = remove_small_components(occlusion_mask, min_area_ratio)
+
+    # Ensure no overlap between masks
+    overlap = scene_mask & occlusion_mask
+    scene_mask = scene_mask & ~overlap
+    occlusion_mask = occlusion_mask & ~overlap
+
     return human_masks, scene_mask.float(), occlusion_mask.float()
+
+def remove_small_components(mask: torch.Tensor, min_area_ratio: float) -> torch.Tensor:
+    """
+    Remove small connected components from the mask.
+
+    Args:
+        mask (torch.Tensor): Binary mask of shape [B, H, W]
+        min_area_ratio (float): Minimum area ratio to keep a connected component
+
+    Returns:
+        torch.Tensor: Cleaned mask
+    """
+    batch_size, height, width = mask.shape
+    min_area = height * width * min_area_ratio
+
+    cleaned_mask = torch.zeros_like(mask)
+    for i in range(batch_size):
+        labels, num_labels = label(mask[i].cpu().numpy())
+        for j in range(1, num_labels + 1):
+            if np.sum(labels == j) >= min_area:
+                cleaned_mask[i][labels == j] = 1
+
+    return cleaned_mask
+
 
 # Example usage:
 # video_path = "path/to/your/video.mp4"
@@ -199,7 +254,13 @@ def process_video(video_path: str, config_path: str, checkpoint_path: str) -> Tu
     depth_maps = estimate_depth(frames)
     human_masks = detect_and_track_humans(frames)
     
-    human_mask, scene_mask, occlusion_mask = compute_masks(depth_maps, human_masks)
+    human_mask, scene_mask, occlusion_mask = compute_masks(
+        depth_maps, 
+        human_masks, 
+        depth_threshold=0.5,  # Adjust as needed
+        smoothing_kernel_size=5,  # Adjust as needed
+        min_area_ratio=0.01  # Adjust as needed
+    )
     
     # Areas to be inpainted are where the human or occlusion masks are 1
     inpainting_mask = human_mask | occlusion_mask

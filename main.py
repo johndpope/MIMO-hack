@@ -284,17 +284,29 @@ def forward_diffusion_sample(x_0, t, device):
     sqrt_one_minus_alphas_cumprod_t = get_index_from_list(sqrt_one_minus_alphas_cumprod, t, x_0.shape)
     return sqrt_alphas_cumprod_t.to(device) * x_0.to(device) + sqrt_one_minus_alphas_cumprod_t.to(device) * noise.to(device), noise.to(device)
 
+
+from torch.utils.data import Dataset
+from typing import List, Dict, Any
+from lama import LAMAInpaintingModule, inpaint_scene
+
 class MIMODataset(Dataset):
-    def __init__(self, video_paths, identity_image_paths, smpl_params, camera_params):
+    def __init__(self, video_paths: List[str], identity_image_paths: List[str], 
+                 smpl_params: List[Any], camera_params: List[Any],
+                 config_path: str, checkpoint_path: str):
         self.video_paths = video_paths
         self.identity_image_paths = identity_image_paths
         self.smpl_params = smpl_params
         self.camera_params = camera_params
+        self.config_path = config_path
+        self.checkpoint_path = checkpoint_path
+        
+        # Initialize LAMA inpainting module
+        self.lama_module = LAMAInpaintingModule(config_path, checkpoint_path)
     
-    def __len__(self):
+    def __len__(self) -> int:
         return len(self.video_paths)
     
-    def __getitem__(self, idx):
+    def __getitem__(self, idx: int) -> Dict[str, torch.Tensor]:
         video = load_video(self.video_paths[idx])
         identity_image = load_video(self.identity_image_paths[idx])[0]  # Assuming it's a single frame
         smpl_params = self.smpl_params[idx]
@@ -314,8 +326,9 @@ class MIMODataset(Dataset):
         scene_frames = video * scene_mask
         occlusion_frames = video * occlusion_mask
         
-        # Inpaint scene frames
-        scene_frames = inpaint_scene(scene_frames)
+        # Inpaint scene frames using LAMA
+        inpainting_mask = human_mask | occlusion_mask
+        scene_frames = inpaint_scene(scene_frames, inpainting_mask, self.config_path, self.checkpoint_path)
         
         return {
             'frames': video,
@@ -324,7 +337,10 @@ class MIMODataset(Dataset):
             'camera_params': camera_params,
             'human_frames': human_frames,
             'scene_frames': scene_frames,
-            'occlusion_frames': occlusion_frames
+            'occlusion_frames': occlusion_frames,
+            'human_mask': human_mask,
+            'scene_mask': scene_mask,
+            'occlusion_mask': occlusion_mask
         }
 
 noise_scheduler = DDPMScheduler(num_train_timesteps=1000)
@@ -416,12 +432,16 @@ model = MIMOModel(num_vertices, feature_dim, image_size).to(device)
 
 # Prepare dataset and dataloader
 # Assume we have the necessary data
-video_paths = [...]
-identity_image_paths = [...]
-smpl_params = [...]
-camera_params = [...]
 
-dataset = MIMODataset(video_paths, identity_image_paths, smpl_params, camera_params)
+video_paths = ["path/to/video1.mp4", "path/to/video2.mp4", ...]
+identity_image_paths = ["path/to/identity1.jpg", "path/to/identity2.jpg", ...]
+smpl_params = [...]  # List of SMPL parameters for each video
+camera_params = [...]  # List of camera parameters for each video
+config_path = "path/to/lama/config.yaml"
+checkpoint_path = "path/to/lama/checkpoint.pth"
+
+
+dataset = MIMODataset(video_paths, identity_image_paths, smpl_params, camera_params, config_path, checkpoint_path)
 dataloader = DataLoader(dataset, batch_size=batch_size, shuffle=True)
 
 # Initialize optimizer
