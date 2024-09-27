@@ -18,7 +18,13 @@ from omegaconf import OmegaConf
 from typing import List, Tuple
 from skimage.measure import label
 import numpy as np
-
+import torch
+import numpy as np
+from PIL import Image
+from torchvision.io import read_video
+from torchvision.transforms import Resize
+from sam2.build_sam2 import build_sam2
+from sam2.sam2_image_predictor import SAM2ImagePredictor
 
 def load_video(video_path):
     """Load video frames as tensors."""
@@ -111,7 +117,7 @@ def estimate_depth(frames):
     
     return torch.stack(depth_maps)
 
-def detect_and_track_humans(frames):
+def detect_and_track_humans_original(frames):
     """Use Detectron2 for human detection and a simple IoU-based tracking."""
     cfg = get_cfg()
     cfg.merge_from_file(model_zoo.get_config_file("COCO-InstanceSegmentation/mask_rcnn_R_50_FPN_3x.yaml"))
@@ -171,7 +177,7 @@ def inpaint_scene(scene_frames):
     
     return torch.stack(inpainted_frames)
 
-def compute_masks(depth_maps: torch.Tensor, human_masks: torch.Tensor, 
+def compute_masks(depth_maps: torch.Tensor, human_masks: torch.Tensor, sam_predictor: SAM2ImagePredictor,
                   depth_threshold: float = 0.5, 
                   smoothing_kernel_size: int = 5, 
                   min_area_ratio: float = 0.01) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
@@ -276,3 +282,103 @@ video_path = "path/to/your/video.mp4"
 config_path = "path/to/lama/config.yaml"
 checkpoint_path = "path/to/lama/checkpoint.pth"
 inpainted_scene, human_video, occlusion_video = process_video(video_path, config_path, checkpoint_path)
+
+
+
+
+def load_sam2_model(config_file, checkpoint_path):
+    """Load and initialize the SAM 2 model."""
+    model = build_sam2(config_file, checkpoint_path)
+    predictor = SAM2ImagePredictor(model)
+    return predictor
+
+def detect_and_track_humans(frames, sam_predictor):
+    """Use SAM 2 for human detection and a simple IoU-based tracking."""
+    human_masks = []
+    prev_boxes = None
+    
+    for frame in frames:
+        frame_np = (frame.permute(1, 2, 0).numpy() * 255).astype(np.uint8)
+        sam_predictor.set_image(frame_np)
+        
+        # Use the center of the image as a prompt point
+        h, w = frame_np.shape[:2]
+        input_point = np.array([[w // 2, h // 2]])
+        input_label = np.array([1])  # 1 for foreground
+        
+        masks, scores, _ = sam_predictor.predict(
+            point_coords=input_point,
+            point_labels=input_label,
+            multimask_output=True
+        )
+        
+        # Select the mask with the highest score
+        best_mask = masks[np.argmax(scores)]
+        
+        # Convert mask to tensor
+        mask_tensor = torch.from_numpy(best_mask).float()
+        
+        if prev_boxes is not None:
+            # Simple tracking based on IoU
+            current_box = mask_to_box(mask_tensor)
+            iou = box_iou(current_box.unsqueeze(0), prev_boxes)
+            if iou.max() > 0.5:  # You can adjust this threshold
+                matched_index = iou.argmax()
+                mask_tensor = human_masks[-1][matched_index]
+        
+        human_masks.append(mask_tensor.unsqueeze(0))
+        prev_boxes = mask_to_box(mask_tensor).unsqueeze(0)
+    
+    return torch.cat(human_masks, dim=0)
+
+def mask_to_box(mask):
+    """Convert a binary mask to a bounding box."""
+    y, x = torch.where(mask > 0.5)
+    return torch.tensor([x.min(), y.min(), x.max(), y.max()])
+
+def box_iou(box1, box2):
+    """Compute IoU between two boxes."""
+    x1, y1, x2, y2 = box1.unbind(-1)
+    x1_, y1_, x2_, y2_ = box2.unbind(-1)
+    
+    w1, h1 = x2 - x1, y2 - y1
+    w2, h2 = x2_ - x1_, y2_ - y1_
+    
+    left = torch.max(x1, x1_)
+    right = torch.min(x2, x2_)
+    top = torch.max(y1, y1_)
+    bottom = torch.min(y2, y2_)
+    
+    intersection = (right - left).clamp(min=0) * (bottom - top).clamp(min=0)
+    union = w1 * h1 + w2 * h2 - intersection
+    
+    return intersection / (union + 1e-6)
+
+
+
+# Update the process_video function
+def process_video(video_path: str, config_path: str, checkpoint_path: str, sam_config: str, sam_checkpoint: str) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+    frames = load_video(video_path)
+    depth_maps = estimate_depth(frames)
+    
+    # Initialize SAM 2 model
+    sam_predictor = load_sam2_model(sam_config, sam_checkpoint)
+    
+    human_masks = detect_and_track_humans(frames, sam_predictor)
+    
+    human_mask, scene_mask, occlusion_mask = compute_masks(
+        depth_maps, 
+        human_masks,
+        sam_predictor,
+        depth_threshold=0.5,
+        smoothing_kernel_size=5,
+        min_area_ratio=0.01
+    )
+    
+    # Areas to be inpainted are where the human or occlusion masks are 1
+    inpainting_mask = human_mask | occlusion_mask
+    
+    scene_frames = frames * (~inpainting_mask)
+    inpainted_scene = inpaint_scene(scene_frames, inpainting_mask, config_path, checkpoint_path)
+    
+    return inpainted_scene, human_mask * frames, occlusion_mask * frames
