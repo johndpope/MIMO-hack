@@ -53,30 +53,37 @@ class MIMODataset(Dataset):
         return pixel_values
 
     def __getitem__(self, idx: int) -> Dict[str, torch.Tensor]:
-        video_path = self.dataset[idx]
-        name = os.path.basename(video_path)
+        while True: # add this so additional workers process videos linearly / sequentially without spawning endless threads.
+            try:
+                video_path = self.dataset[idx]
+                name = os.path.basename(video_path)
 
-        # Load video frames
-        video = self.get_video_frames(video_path)
-        video = self.pixel_transforms(video)
+                # Load video frames
+                video = self.get_video_frames(video_path)
+                video = self.pixel_transforms(video)
 
-        # Compute depth maps 
-        depth_maps = estimate_depth(video)
+                # Compute depth maps 
+                depth_maps = estimate_depth(video)
 
+                # Detect and track humans
+                human_masks = detect_and_track_humans(video)
 
-        human_masks = detect_and_track_humans(video)
+                # Compute masks for spatial decomposition
+                human_mask, scene_mask, occlusion_mask = compute_masks(depth_maps, human_masks)
 
-        # Compute masks for spatial decomposition
-        human_mask, scene_mask, occlusion_mask = compute_masks(depth_maps, human_masks)
+                # Apply masks to get decomposed components
+                human_frames = video * human_mask
+                scene_frames = video * scene_mask
+                occlusion_frames = video * occlusion_mask
 
-        # Apply masks to get decomposed components
-        human_frames = video * human_mask
-        scene_frames = video * scene_mask
-        occlusion_frames = video * occlusion_mask
+                # Inpaint scene frames using LAMA
+                inpainting_mask = human_mask | occlusion_mask
+                scene_frames = inpaint_scene(scene_frames, inpainting_mask, self.config_path, self.checkpoint_path)
 
-        # Inpaint scene frames using LAMA
-        inpainting_mask = human_mask | occlusion_mask
-        scene_frames = inpaint_scene(scene_frames, inpainting_mask, self.config_path, self.checkpoint_path)
+                break
+            except Exception as e:
+                print(f"Error loading video {self.dataset[idx]}: {e}")
+                idx = random.randint(0, self.length-1)
 
         return {
             'frames': video,
