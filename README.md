@@ -1,6 +1,9 @@
 # MIMO-hack
 
 
+https://github.com/Uminosachi/inpaint-anything
+
+
 
 ## Dataset
 We create a human video dataset called HUD-7K
@@ -12,6 +15,25 @@ complex motions under multiple camera views, utilizing En3D [21].
 These synthetic videos are equipped with accurate annotations due to completely controlled production.
 
 https://github.com/menyifang/En3D
+
+
+
+## Synthetic Training data
+https://openxlab.org.cn/datasets/OpenXDLab/SynBody
+
+```
+pip install openxlab #Install
+
+pip install -U openxlab #Upgrade
+
+openxlab login # Log in and enter the corresponding AK/SK. Please view AK/SK at usercenter
+
+openxlab dataset info --dataset-repo OpenXDLab/SynBody # Dataset information viewing and View Dataset File List
+
+openxlab dataset get --dataset-repo OpenXDLab/SynBody #Dataset download
+
+openxlab dataset download --dataset-repo OpenXDLab/SynBody --source-path /README.md --target-path /path/to/local/folder #Dataset file download
+```
 
 
 
