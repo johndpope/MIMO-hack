@@ -6,12 +6,12 @@ import numpy as np
 from PIL import Image
 from torchvision.io import read_video
 from torchvision.transforms import Resize
-from midas.model_loader import load_model as load_midas_model
+# from midas.model_loader import load_model as load_midas_model
 from detectron2 import model_zoo
 from detectron2.engine import DefaultPredictor
 from detectron2.config import get_cfg
 from smplx import SMPL
-from torchvision.models.segmentation import deeplabv3_resnet50
+# from torchvision.models.segmentation import deeplabv3_resnet50
 from torchvision import transforms
 import os 
 from omegaconf import OmegaConf
@@ -23,7 +23,7 @@ import numpy as np
 from PIL import Image
 from torchvision.io import read_video
 from torchvision.transforms import Resize
-from sam2.build_sam2 import build_sam2
+from sam2.build_sam import build_sam2
 from sam2.sam2_image_predictor import SAM2ImagePredictor
 
 def load_video(video_path):
@@ -34,14 +34,14 @@ def load_video(video_path):
 
 
 def load_sapiens_model(model_size="1b", device="cuda"):
-    CHECKPOINTS_DIR = '/path/to/sapiens/checkpoints'  # Update this path
+
     CHECKPOINTS = {
-        "0.3b": "sapiens_0.3b_render_people_epoch_100_torchscript.pt2",
-        "0.6b": "sapiens_0.6b_render_people_epoch_70_torchscript.pt2",
-        "1b": "sapiens_1b_render_people_epoch_88_torchscript.pt2",
-        "2b": "sapiens_2b_render_people_epoch_25_torchscript.pt2",
+        "0.3b": "/media/oem/12TB/sapiens/pretrain/sapiens_lite_host/torchscript/depth/checkpoints/sapiens_0.3b/sapiens_0.3b_render_people_epoch_100_torchscript.pt2",
+        "0.6b": "/media/oem/12TB/sapiens/pretrain/sapiens_lite_host/torchscript/depth/checkpoints/sapiens_0.6b/sapiens_0.6b_render_people_epoch_70_torchscript.pt2",
+        "1b": "/media/oem/12TB/sapiens/pretrain/sapiens_lite_host/torchscript/depth/checkpoints/sapiens_1b/sapiens_1b_render_people_epoch_88_torchscript.pt2",
+        "2b": "/media/oem/12TB/sapiens/pretrain/sapiens_lite_host/torchscript/depth/checkpoints/sapiens_2b/sapiens_2b_render_people_epoch_25_torchscript.pt2",
     }
-    checkpoint_path = os.path.join(CHECKPOINTS_DIR, CHECKPOINTS[model_size])
+    checkpoint_path = CHECKPOINTS[model_size]
     model = torch.jit.load(checkpoint_path)
     model.eval()
     return model.to(device)
@@ -63,6 +63,7 @@ def estimate_depth_sapien(frames, model_size="1b", use_background_removal=False)
     
     depth_maps = []
     for frame in frames:
+        print("frame:",frame)
         # Preprocess
         frame_np = (frame.permute(1, 2, 0).numpy() * 255).astype(np.uint8)
         frame_pil = Image.fromarray(frame_np)
@@ -91,31 +92,31 @@ def estimate_depth_sapien(frames, model_size="1b", use_background_removal=False)
     return torch.stack(depth_maps)
 
 
-def estimate_depth(frames):
-    """Use a pre-trained monocular depth estimator (MiDaS)."""
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    midas = load_midas_model("DPT_Large", device)
+# def estimate_depth(frames):
+#     """Use a pre-trained monocular depth estimator (MiDaS)."""
+#     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+#     midas = load_midas_model("DPT_Large", device)
     
-    depth_maps = []
-    for frame in frames:
-        # Preprocess
-        frame_np = (frame.permute(1, 2, 0).numpy() * 255).astype(np.uint8)
-        frame_pil = Image.fromarray(frame_np)
-        frame_input = Resize((384, 384))(frame_pil)
-        frame_input = torch.from_numpy(np.array(frame_input)).permute(2, 0, 1).unsqueeze(0).float() / 255.0
+#     depth_maps = []
+#     for frame in frames:
+#         # Preprocess
+#         frame_np = (frame.permute(1, 2, 0).numpy() * 255).astype(np.uint8)
+#         frame_pil = Image.fromarray(frame_np)
+#         frame_input = Resize((384, 384))(frame_pil)
+#         frame_input = torch.from_numpy(np.array(frame_input)).permute(2, 0, 1).unsqueeze(0).float() / 255.0
         
-        # Inference
-        with torch.no_grad():
-            depth = midas(frame_input.to(device))
+#         # Inference
+#         with torch.no_grad():
+#             depth = midas(frame_input.to(device))
         
-        # Resize back to original size
-        depth = torch.nn.functional.interpolate(
-            depth.unsqueeze(1), size=frame.shape[1:], mode="bicubic", align_corners=False
-        ).squeeze()
+#         # Resize back to original size
+#         depth = torch.nn.functional.interpolate(
+#             depth.unsqueeze(1), size=frame.shape[1:], mode="bicubic", align_corners=False
+#         ).squeeze()
         
-        depth_maps.append(depth)
+#         depth_maps.append(depth)
     
-    return torch.stack(depth_maps)
+#     return torch.stack(depth_maps)
 
 def detect_and_track_humans_original(frames):
     """Use Detectron2 for human detection and a simple IoU-based tracking."""
@@ -256,17 +257,50 @@ def remove_small_components(mask: torch.Tensor, min_area_ratio: float) -> torch.
 # human_mask, scene_mask, occlusion_mask = compute_masks(depth_maps, human_masks)
 
 
-def process_video(video_path: str, config_path: str, checkpoint_path: str) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+# def process_video(video_path: str, config_path: str, checkpoint_path: str) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+#     frames = load_video(video_path)
+#     depth_maps = estimate_depth_sapien(frames)
+#     human_masks = detect_and_track_humans(frames)
+    
+#     human_mask, scene_mask, occlusion_mask = compute_masks(
+#         depth_maps, 
+#         human_masks, 
+#         depth_threshold=0.5,  # Adjust as needed
+#         smoothing_kernel_size=5,  # Adjust as needed
+#         min_area_ratio=0.01  # Adjust as needed
+#     )
+    
+#     # Areas to be inpainted are where the human or occlusion masks are 1
+#     inpainting_mask = human_mask | occlusion_mask
+    
+#     scene_frames = frames * (~inpainting_mask)
+#     inpainted_scene = inpaint_scene(scene_frames, inpainting_mask, config_path, checkpoint_path)
+    
+#     return inpainted_scene, human_mask * frames, occlusion_mask * frames
+
+# # Usage
+# video_path = "path/to/your/video.mp4"
+# config_path = "path/to/lama/config.yaml"
+# checkpoint_path = "path/to/lama/checkpoint.pth"
+# inpainted_scene, human_video, occlusion_video = process_video(video_path, config_path, checkpoint_path)
+
+# Update the process_video function
+def process_video(video_path: str, config_path: str, checkpoint_path: str, sam_config: str, sam_checkpoint: str) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
     frames = load_video(video_path)
-    depth_maps = estimate_depth(frames)
-    human_masks = detect_and_track_humans(frames)
+    depth_maps = estimate_depth_sapien(frames)
+    
+    # Initialize SAM 2 model
+    sam_predictor = load_sam2_model(sam_config, sam_checkpoint)
+    
+    human_masks = detect_and_track_humans(frames, sam_predictor)
     
     human_mask, scene_mask, occlusion_mask = compute_masks(
         depth_maps, 
-        human_masks, 
-        depth_threshold=0.5,  # Adjust as needed
-        smoothing_kernel_size=5,  # Adjust as needed
-        min_area_ratio=0.01  # Adjust as needed
+        human_masks,
+        sam_predictor,
+        depth_threshold=0.5,
+        smoothing_kernel_size=5,
+        min_area_ratio=0.01
     )
     
     # Areas to be inpainted are where the human or occlusion masks are 1
@@ -276,14 +310,6 @@ def process_video(video_path: str, config_path: str, checkpoint_path: str) -> Tu
     inpainted_scene = inpaint_scene(scene_frames, inpainting_mask, config_path, checkpoint_path)
     
     return inpainted_scene, human_mask * frames, occlusion_mask * frames
-
-# Usage
-video_path = "path/to/your/video.mp4"
-config_path = "path/to/lama/config.yaml"
-checkpoint_path = "path/to/lama/checkpoint.pth"
-inpainted_scene, human_video, occlusion_video = process_video(video_path, config_path, checkpoint_path)
-
-
 
 
 def load_sam2_model(config_file, checkpoint_path):
@@ -356,29 +382,3 @@ def box_iou(box1, box2):
 
 
 
-# Update the process_video function
-def process_video(video_path: str, config_path: str, checkpoint_path: str, sam_config: str, sam_checkpoint: str) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
-    frames = load_video(video_path)
-    depth_maps = estimate_depth(frames)
-    
-    # Initialize SAM 2 model
-    sam_predictor = load_sam2_model(sam_config, sam_checkpoint)
-    
-    human_masks = detect_and_track_humans(frames, sam_predictor)
-    
-    human_mask, scene_mask, occlusion_mask = compute_masks(
-        depth_maps, 
-        human_masks,
-        sam_predictor,
-        depth_threshold=0.5,
-        smoothing_kernel_size=5,
-        min_area_ratio=0.01
-    )
-    
-    # Areas to be inpainted are where the human or occlusion masks are 1
-    inpainting_mask = human_mask | occlusion_mask
-    
-    scene_frames = frames * (~inpainting_mask)
-    inpainted_scene = inpaint_scene(scene_frames, inpainting_mask, config_path, checkpoint_path)
-    
-    return inpainted_scene, human_mask * frames, occlusion_mask * frames

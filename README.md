@@ -3,6 +3,10 @@
 
 https://github.com/Uminosachi/inpaint-anything
 
+```shell
+test_motion.py
+```
+https://huggingface.co/lilpotat/pytorch3d/tree/main
 
 
 ## Dataset

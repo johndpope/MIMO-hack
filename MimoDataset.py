@@ -5,8 +5,8 @@ import torchvision.transforms as transforms
 from torch.utils.data import Dataset
 from typing import Dict, Any
 from decord import VideoReader
-from utils import load_video, estimate_depth, compute_masks, inpaint_scene
-from sam2.build_sam2 import build_sam2
+from utils import load_video, estimate_depth_sapien, compute_masks, inpaint_scene
+from sam2.build_sam import build_sam2
 from sam2.sam2_image_predictor import SAM2ImagePredictor
 import numpy as np
 
@@ -116,7 +116,7 @@ class MIMODataset(Dataset):
                 video = self.pixel_transforms(video)
 
                 # Compute depth maps 
-                depth_maps = estimate_depth(video)
+                depth_maps = estimate_depth_sapien(video)
 
                 # Detect and track humans using SAM2
                 human_masks = self.detect_and_track_humans(video)

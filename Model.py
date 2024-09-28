@@ -16,13 +16,19 @@ from pytorch3d.renderer import (
     SoftPhongShader,
     TexturesVertex
 )
-from utils import load_video,estimate_depth,detect_and_track_humans,extract_pose,inpaint_scene,compute_masks
+# from utils import load_video,estimate_depth,detect_and_track_humans,extract_pose,inpaint_scene,compute_masks
 from diffusers import UNet3DConditionModel, AutoencoderKL
 from diffusers.models.attention import BasicTransformerBlock
-from diffusers.models.unet_3d_blocks import DownBlock3D, UpBlock3D, CrossAttnDownBlock3D, CrossAttnUpBlock3D
+from diffusers.models.unets.unet_3d_blocks import (
+    DownBlock3D,
+    UpBlock3D,
+    CrossAttnDownBlock3D,
+    CrossAttnUpBlock3D,
+)
+# from diffusers.models.unet_3d_blocks import DownBlock3D, UpBlock3D, CrossAttnDownBlock3D, CrossAttnUpBlock3D
 from diffusers import DDIMScheduler,DDPMScheduler
 from MimoDataset import MIMODataset
-
+import nvdiffrast.torch as dr
 
 class TemporalAttentionLayer(nn.Module):
     def __init__(self, channels, num_head_channels, num_groups=32):
@@ -52,42 +58,112 @@ class TemporalUNet3DConditionModel(UNet3DConditionModel):
                     layer.transformer_blocks.append(TemporalAttentionLayer(layer.channels, layer.num_head_channels))
 
 
+
+
+
 class DifferentiableRasterizer(nn.Module):
     def __init__(self, image_size):
         super(DifferentiableRasterizer, self).__init__()
         self.image_size = image_size
-        self.raster_settings = RasterizationSettings(
-            image_size=image_size, 
-            blur_radius=0.0, 
-            faces_per_pixel=1
-        )
-        self.renderer = MeshRenderer(
-            rasterizer=MeshRasterizer(raster_settings=self.raster_settings),
-            shader=SoftPhongShader()
-        )
-    
+        self.ctx = dr.RasterizeGLContext()
+        
     def forward(self, vertices, faces, features):
         batch_size, num_vertices, _ = vertices.shape
         device = vertices.device
 
-        # Create a batch of meshes
-        meshes = Meshes(verts=vertices, faces=faces.expand(batch_size, -1, -1))
-        
-        # Create textures from features
-        textures = TexturesVertex(verts_features=features)
-        meshes.textures = textures
+        # Create perspective projection matrix
+        fov = 60
+        aspect_ratio = 1.0
+        near = 0.1
+        far = 100
+        proj_mtx = self.perspective_projection(fov, aspect_ratio, near, far)
 
-        # Create dummy cameras (assuming orthographic projection for simplicity)
-        cameras = PerspectiveCameras(device=device, R=torch.eye(3).unsqueeze(0).expand(batch_size, -1, -1),
-                                     T=torch.zeros(batch_size, 3), fov=60)
+        # Apply perspective projection
+        vertices_proj = self.apply_perspective(vertices, proj_mtx)
 
-        # Render the meshes
-        rendered_images = self.renderer(meshes, cameras=cameras)
+        # Prepare vertices for nvdiffrast (clip space)
+        vertices_clip = vertices_proj.clone()
+        vertices_clip[..., :2] = -vertices_clip[..., :2]
+        vertices_clip[..., 2] = 1 - vertices_clip[..., 2]
+
+        # Rasterize
+        rast, _ = dr.rasterize(self.ctx, vertices_clip, faces, resolution=[self.image_size, self.image_size])
+
+        # Interpolate features
+        feature_maps = dr.interpolate(features, rast, faces)
         
-        # Extract the feature maps (discard alpha channel)
-        feature_maps = rendered_images[..., :features.shape[-1]]
+        # Apply simple shading (similar to SoftPhongShader)
+        normals = dr.interpolate(self.compute_normals(vertices, faces), rast, faces)
+        light_dir = torch.tensor([0, 0, -1], dtype=torch.float32, device=device).expand(batch_size, 3)
+        diffuse = torch.sum(normals * light_dir.unsqueeze(1).unsqueeze(1), dim=-1).clamp(min=0)
+        shaded_features = feature_maps * diffuse.unsqueeze(-1)
         
-        return feature_maps
+        return shaded_features
+
+    def perspective_projection(self, fov, aspect_ratio, near, far):
+        fov_rad = np.radians(fov)
+        f = 1 / np.tan(fov_rad / 2)
+        return torch.tensor([
+            [f / aspect_ratio, 0, 0, 0],
+            [0, f, 0, 0],
+            [0, 0, (far + near) / (near - far), (2 * far * near) / (near - far)],
+            [0, 0, -1, 0]
+        ], dtype=torch.float32)
+
+    def apply_perspective(self, vertices, proj_mtx):
+        # Convert to homogeneous coordinates
+        vertices_hom = torch.cat([vertices, torch.ones_like(vertices[..., :1])], dim=-1)
+        # Apply projection matrix
+        vertices_proj = torch.matmul(vertices_hom, proj_mtx.T.to(vertices.device))
+        # Perspective division
+        vertices_proj = vertices_proj[..., :3] / vertices_proj[..., 3:]
+        return vertices_proj
+
+    def compute_normals(self, vertices, faces):
+        v0 = torch.index_select(vertices, 1, faces[:, :, 0])
+        v1 = torch.index_select(vertices, 1, faces[:, :, 1])
+        v2 = torch.index_select(vertices, 1, faces[:, :, 2])
+        normals = torch.cross(v1 - v0, v2 - v0, dim=-1)
+        normals = F.normalize(normals, dim=-1)
+        return normals
+
+# pytorch3d
+# class DifferentiableRasterizer(nn.Module):
+#     def __init__(self, image_size):
+#         super(DifferentiableRasterizer, self).__init__()
+#         self.image_size = image_size
+#         self.raster_settings = RasterizationSettings(
+#             image_size=image_size, 
+#             blur_radius=0.0, 
+#             faces_per_pixel=1
+#         )
+#         self.renderer = MeshRenderer(
+#             rasterizer=MeshRasterizer(raster_settings=self.raster_settings),
+#             shader=SoftPhongShader()
+#         )
+    
+#     def forward(self, vertices, faces, features):
+#         batch_size, num_vertices, _ = vertices.shape
+#         device = vertices.device
+
+#         # Create a batch of meshes
+#         meshes = Meshes(verts=vertices, faces=faces.expand(batch_size, -1, -1))
+        
+#         # Create textures from features
+#         textures = TexturesVertex(verts_features=features)
+#         meshes.textures = textures
+
+#         # Create dummy cameras (assuming orthographic projection for simplicity)
+#         cameras = PerspectiveCameras(device=device, R=torch.eye(3).unsqueeze(0).expand(batch_size, -1, -1),
+#                                      T=torch.zeros(batch_size, 3), fov=60)
+
+#         # Render the meshes
+#         rendered_images = self.renderer(meshes, cameras=cameras)
+        
+#         # Extract the feature maps (discard alpha channel)
+#         feature_maps = rendered_images[..., :features.shape[-1]]
+        
+#         return feature_maps
 
 class StructuredMotionEncoder(nn.Module):
     def __init__(self, num_vertices, feature_dim, image_size):
@@ -96,7 +172,7 @@ class StructuredMotionEncoder(nn.Module):
         self.feature_dim = feature_dim
         self.latent_codes = nn.Parameter(torch.randn(num_vertices, feature_dim))
         self.rasterizer = DifferentiableRasterizer(image_size)
-        self.smpl = SMPL('./SMPLX_NEUTRAL.npz', batch_size=1)
+        self.smpl = SMPL('./SMPLX_NEUTRAL.pkl', batch_size=1) # MagicMan/thirdparties/econ/data/smpl_related/models/smplx
         
         self.encoder = nn.Sequential(
             nn.Conv3d(feature_dim, 64, kernel_size=3, padding=1),

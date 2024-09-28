@@ -7,3 +7,4 @@ pytorch3d
 clip
 SMPL
 diffusers
+git+https://github.com/NVlabs/nvdiffrast/
