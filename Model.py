@@ -164,7 +164,6 @@ class DifferentiableRasterizer(nn.Module):
 #         feature_maps = rendered_images[..., :features.shape[-1]]
         
 #         return feature_maps
-
 class StructuredMotionEncoder(nn.Module):
     def __init__(self, num_vertices, feature_dim, image_size):
         super(StructuredMotionEncoder, self).__init__()
@@ -172,7 +171,7 @@ class StructuredMotionEncoder(nn.Module):
         self.feature_dim = feature_dim
         self.latent_codes = nn.Parameter(torch.randn(num_vertices, feature_dim))
         self.rasterizer = DifferentiableRasterizer(image_size)
-        self.smpl = SMPL('./SMPLX_NEUTRAL.pkl', batch_size=1) # MagicMan/thirdparties/econ/data/smpl_related/models/smplx
+        self.smpl = SMPL('./SMPLX_NEUTRAL.pkl', batch_size=1)  # Set batch_size to 1
         
         self.encoder = nn.Sequential(
             nn.Conv3d(feature_dim, 64, kernel_size=3, padding=1),
@@ -187,35 +186,59 @@ class StructuredMotionEncoder(nn.Module):
         )
     
     def forward(self, smpl_params, camera_params):
-        batch_size, num_frames, _ = smpl_params.shape
+        print(f"StructuredMotionEncoder input shapes: smpl_params={smpl_params.shape}, camera_params={camera_params.shape}")
+        
+        batch_size, num_frames, param_dim = smpl_params.shape
         device = smpl_params.device
         
-        # Expand latent codes for batch processing
         expanded_codes = self.latent_codes.unsqueeze(0).expand(batch_size * num_frames, -1, -1)
+        print(f"Expanded codes shape: {expanded_codes.shape}")
         
-        # Process SMPL parameters
-        smpl_params = smpl_params.view(-1, smpl_params.shape[-1])
-        smpl_output = self.smpl(
-            betas=smpl_params[:, :10],
-            body_pose=smpl_params[:, 10:72],
-            global_orient=smpl_params[:, 72:75],
-            pose2rot=False
-        )
-        vertices = smpl_output.vertices
-        faces = self.smpl.faces.unsqueeze(0).expand(batch_size * num_frames, -1, -1)
+        # Reshape smpl_params to [num_frames * batch_size, param_dim]
+        smpl_params = smpl_params.view(-1, param_dim)
+        print(f"Reshaped smpl_params shape: {smpl_params.shape}")
+        
+        # Split smpl_params into its components
+        betas = smpl_params[:, :10]
+        body_pose = smpl_params[:, 10:82]  # 72 parameters for body pose
+        global_orient = smpl_params[:, 82:85]  # 3 parameters for global orientation
+        
+        print(f"SMPL input shapes - betas: {betas.shape}, body_pose: {body_pose.shape}, global_orient: {global_orient.shape}")
+        
+        try:
+            vertices_list = []
+            for i in range(batch_size * num_frames):
+                smpl_output = self.smpl(
+                    betas=betas[i:i+1],
+                    body_pose=body_pose[i:i+1],
+                    global_orient=global_orient[i:i+1],
+                    pose2rot=False  # Set to False as input poses are in axis-angle format
+                )
+                vertices_list.append(smpl_output.vertices)
+            
+            vertices = torch.cat(vertices_list, dim=0)
+            faces = self.smpl.faces.unsqueeze(0).expand(batch_size * num_frames, -1, -1)
+            print(f"SMPL output shapes: vertices={vertices.shape}, faces={faces.shape}")
+        except RuntimeError as e:
+            print(f"RuntimeError in SMPL forward pass: {str(e)}")
+            print(f"SMPL input tensor sizes:")
+            print(f"  betas: {betas.size()}")
+            print(f"  body_pose: {body_pose.size()}")
+            print(f"  global_orient: {global_orient.size()}")
+            raise
 
-        # Project to 2D using camera parameters
         projected_vertices = self.project_to_2d(vertices, camera_params.view(-1, camera_params.shape[-1]))
+        print(f"Projected vertices shape: {projected_vertices.shape}")
         
-        # Rasterize to create 2D feature maps
         feature_maps = self.rasterizer(projected_vertices, faces, expanded_codes)
+        print(f"Feature maps shape after rasterization: {feature_maps.shape}")
         
-        # Reshape feature maps to include temporal dimension
         feature_maps = feature_maps.view(batch_size, num_frames, self.feature_dim, self.rasterizer.image_size, self.rasterizer.image_size)
-        feature_maps = feature_maps.permute(0, 2, 1, 3, 4)  # [B, C, T, H, W]
+        feature_maps = feature_maps.permute(0, 2, 1, 3, 4)
+        print(f"Feature maps shape after reshaping: {feature_maps.shape}")
         
-        # Encode feature maps to motion code
         motion_code = self.encoder(feature_maps)
+        print(f"Motion code shape: {motion_code.shape}")
         
         return motion_code
     
