@@ -171,7 +171,7 @@ class StructuredMotionEncoder(nn.Module):
         self.feature_dim = feature_dim
         self.latent_codes = nn.Parameter(torch.randn(num_vertices, feature_dim))
         self.rasterizer = DifferentiableRasterizer(image_size)
-        self.smpl = SMPL('./SMPLX_NEUTRAL.pkl', batch_size=1)  # Set batch_size to 1
+        self.smpl = SMPL('./SMPLX_NEUTRAL.pkl', batch_size=1)
         
         self.encoder = nn.Sequential(
             nn.Conv3d(feature_dim, 64, kernel_size=3, padding=1),
@@ -194,7 +194,7 @@ class StructuredMotionEncoder(nn.Module):
         expanded_codes = self.latent_codes.unsqueeze(0).expand(batch_size * num_frames, -1, -1)
         print(f"Expanded codes shape: {expanded_codes.shape}")
         
-        # Reshape smpl_params to [num_frames * batch_size, param_dim]
+        # Reshape smpl_params to [batch_size * num_frames, param_dim]
         smpl_params = smpl_params.view(-1, param_dim)
         print(f"Reshaped smpl_params shape: {smpl_params.shape}")
         
@@ -206,17 +206,13 @@ class StructuredMotionEncoder(nn.Module):
         print(f"SMPL input shapes - betas: {betas.shape}, body_pose: {body_pose.shape}, global_orient: {global_orient.shape}")
         
         try:
-            vertices_list = []
-            for i in range(batch_size * num_frames):
-                smpl_output = self.smpl(
-                    betas=betas[i:i+1],
-                    body_pose=body_pose[i:i+1],
-                    global_orient=global_orient[i:i+1],
-                    pose2rot=False  # Set to False as input poses are in axis-angle format
-                )
-                vertices_list.append(smpl_output.vertices)
-            
-            vertices = torch.cat(vertices_list, dim=0)
+            smpl_output = self.smpl(
+                betas=betas,
+                body_pose=body_pose,
+                global_orient=global_orient,
+                pose2rot=True  # Change this to True as input poses are in axis-angle format
+            )
+            vertices = smpl_output.vertices
             faces = self.smpl.faces.unsqueeze(0).expand(batch_size * num_frames, -1, -1)
             print(f"SMPL output shapes: vertices={vertices.shape}, faces={faces.shape}")
         except RuntimeError as e:
@@ -254,6 +250,7 @@ class StructuredMotionEncoder(nn.Module):
         projected_vertices = projected_vertices / projected_vertices[:, :, 2:]
         
         return projected_vertices
+
 
 class CanonicalIdentityEncoder(nn.Module):
     def __init__(self, clip_model):
