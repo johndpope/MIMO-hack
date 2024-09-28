@@ -206,13 +206,27 @@ class StructuredMotionEncoder(nn.Module):
         print(f"SMPL input shapes - betas: {betas.shape}, body_pose: {body_pose.shape}, global_orient: {global_orient.shape}")
         
         try:
-            smpl_output = self.smpl(
-                betas=betas,
-                body_pose=body_pose,
-                global_orient=global_orient,
-                pose2rot=True  # Change this to True as input poses are in axis-angle format
-            )
-            vertices = smpl_output.vertices
+            # Process frames in batches to avoid memory issues
+            batch_size = 32
+            vertices_list = []
+            print(f"Total number of frames to process: {smpl_params.shape[0]}")
+            for i in range(0, smpl_params.shape[0], batch_size):
+                batch_end = min(i + batch_size, smpl_params.shape[0])
+                print(f"Processing batch {i//batch_size + 1}: frames {i} to {batch_end}")
+                print(f"  Batch betas shape: {betas[i:batch_end].shape}")
+                print(f"  Batch body_pose shape: {body_pose[i:batch_end].shape}")
+                print(f"  Batch global_orient shape: {global_orient[i:batch_end].shape}")
+                
+                smpl_output = self.smpl(
+                    betas=betas[i:batch_end],
+                    body_pose=body_pose[i:batch_end],
+                    global_orient=global_orient[i:batch_end],
+                    pose2rot=True  # Set to True as input poses are in axis-angle format
+                )
+                print(f"  SMPL output vertices shape: {smpl_output.vertices.shape}")
+                vertices_list.append(smpl_output.vertices)
+            
+            vertices = torch.cat(vertices_list, dim=0)
             faces = self.smpl.faces.unsqueeze(0).expand(batch_size * num_frames, -1, -1)
             print(f"SMPL output shapes: vertices={vertices.shape}, faces={faces.shape}")
         except RuntimeError as e:
