@@ -1,39 +1,43 @@
 import torch
 import json
 import numpy as np
+import os
 from Model import StructuredMotionEncoder
 
-def load_camera_params(json_file):
-    with open(json_file, 'r') as f:
-        data = json.load(f)
-    
-    camera_params = []
-    for camera in data.values():
-        R = torch.tensor(camera['R'], dtype=torch.float32).flatten()
-        T = torch.tensor(camera['T'], dtype=torch.float32)
-        camera_params.append(torch.cat([R, T]))
-    
-    return torch.stack(camera_params)
+def get_cams(root_dir):
+    with open(os.path.join(root_dir, 'calibration_full.json'), 'r') as fp:
+        cam_data = json.load(fp)
+    return cam_data
 
-def load_smpl_params(npy_file):
-    return torch.tensor(np.load(npy_file), dtype=torch.float32)
+def get_cam_ssns(dataset_fpath):
+    cam_ssns = []
+    with open(os.path.join(dataset_fpath, 'cam_ssns.txt'), 'r') as fp:
+        lns = fp.readlines()
+    for ln in lns:
+        ln = ln.strip().split(' ')
+        if len(ln) > 0:
+            cam_ssns.append(ln[0])
+    return cam_ssns
 
+def load_smplx_params(smpl_param_ckpt_fpath, body_only=True):
+    npz = np.load(smpl_param_ckpt_fpath)
+    d = {x: torch.from_numpy(npz[x]).float() for x in npz.keys()}
 
-def load_smplx_params(npz_file):
-    data = np.load(npz_file)
-    
-    # Extract relevant parameters
-    betas = torch.tensor(data['betas'], dtype=torch.float32)
-    global_orient = torch.tensor(data['global_orient'], dtype=torch.float32)
-    body_pose = torch.tensor(data['body_pose'], dtype=torch.float32)
-    
-    # Combine parameters
-    smplx_params = torch.cat([betas, global_orient, body_pose], dim=-1)
-    
-    return smplx_params
+    betas = d['betas']
+    orient = d['global_orient']
+    body_pose = d['body_pose']
+    jaw_pose = d['jaw_pose']
+    leye_pose = torch.zeros_like(jaw_pose)
+    reye_pose = torch.zeros_like(jaw_pose)
+    left_hand_pose = d['left_hand_pose']
+    right_hand_pose = d['right_hand_pose']
+    poses = torch.cat([orient, body_pose, jaw_pose, leye_pose, reye_pose, left_hand_pose, right_hand_pose], dim=1)
+    if body_only:
+        poses[:, body_pose.shape[1]:] *= 0.0
+    trans = d['transl']
+    return betas, poses, trans
 
-
-def test_motion_encoder():
+def test_motion_encoder(data_dir, cam_ids_to_use):
     # Initialize the StructuredMotionEncoder
     num_vertices = 6890  # SMPL model typically has 6890 vertices
     feature_dim = 64  # Adjust as needed
@@ -41,17 +45,32 @@ def test_motion_encoder():
     motion_encoder = StructuredMotionEncoder(num_vertices, feature_dim, image_size)
 
     # Load camera parameters
-    camera_params = load_camera_params('./data/001/camera.json')
+    cam_data = get_cams(data_dir)
+    print("cam_data:",cam_data)
+    cam_ssn_list = get_cam_ssns(data_dir)
 
     # Load SMPLX parameters
-    smplx_params = load_smplx_params('./data/001/smplx.npz')
+    betas, poses, trans = load_smplx_params(os.path.join(data_dir, 'smpl_params.npz'))
 
-      # Ensure the data is in the correct shape
-    num_frames = smplx_params.shape[0]
-    num_cameras = camera_params.shape[0]
-    print("num_cameras:",num_cameras)
+    # Prepare camera parameters
+    camera_params = []
+    for cam_id in cam_ids_to_use:
+        cam_ssn = cam_ssn_list[cam_id]
+        R = torch.tensor(cam_data[cam_ssn]['R'], dtype=torch.float32).flatten()
+        T = torch.tensor(cam_data[cam_ssn]['T'], dtype=torch.float32)
+        camera_params.append(torch.cat([R, T]))
+    camera_params = torch.stack(camera_params)
+
+    # Ensure the data is in the correct shape
+    num_frames = poses.shape[0]
+    num_cameras = len(cam_ids_to_use)
+    print("num_cameras:", num_cameras)
+
     # Repeat camera params for each frame
     camera_params = camera_params.unsqueeze(0).repeat(num_frames, 1, 1)
+
+    # Combine poses and trans
+    smplx_params = torch.cat([poses, trans], dim=-1)
 
     # Add batch dimension
     smplx_params = smplx_params.unsqueeze(0)
@@ -69,6 +88,7 @@ def test_motion_encoder():
     print(f"Motion code shape: {motion_code.shape}")
     print(f"Motion code sample: {motion_code[0, :10]}")  # Print first 10 values of the motion code
 
-
 if __name__ == "__main__":
-    test_motion_encoder()
+    data_dir = '/media/oem/12TB/meshavatar/avatarrex_zzr'
+    cam_ids_to_use = [0]  # Adjust this list as needed
+    test_motion_encoder(data_dir, cam_ids_to_use)
