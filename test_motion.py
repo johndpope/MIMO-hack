@@ -140,6 +140,7 @@ def test_motion_encoder(data_dir, cam_ids_to_use):
     print(f"Moving tensors to device: {device}")
     smplx_params = smplx_params.to(device)
     camera_params = camera_params.to(device)
+    betas = betas.to(device)
 
     print("Performing forward pass...")
     try:
