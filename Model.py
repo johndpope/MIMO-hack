@@ -175,7 +175,7 @@ class StructuredMotionEncoder(nn.Module):
                             model_type='smplx',
                             gender='neutral', 
                             use_pca=False,
-                        device=self.device )
+                        device='cuda' )
         
          # Convert faces to a PyTorch tensor and store it
         self.register_buffer(
