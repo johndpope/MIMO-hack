@@ -171,7 +171,10 @@ class StructuredMotionEncoder(nn.Module):
         self.feature_dim = feature_dim
         self.latent_codes = nn.Parameter(torch.randn(num_vertices, feature_dim))
         self.rasterizer = DifferentiableRasterizer(image_size)
-        self.smplx = SMPLX('./SMPLX_NEUTRAL.npz',   model_type='smplx',gender='neutral', use_pca=False,batch_size=32)
+        self.smplx = SMPLX('./SMPLX_NEUTRAL.npz',  
+                            model_type='smplx',
+                            gender='neutral', 
+                            use_pca=False)
         
         self.encoder = nn.Sequential(
             nn.Conv3d(feature_dim, 64, kernel_size=3, padding=1),
@@ -197,7 +200,7 @@ class StructuredMotionEncoder(nn.Module):
         batch_size, num_frames, param_dim = smpl_params.shape
         device = smpl_params.device
         
-        # Reshape smpl_params to [batch_size * num_frames, param_dim]
+        # Reshape smpl_params to [num_frames, param_dim]
         smpl_params = smpl_params.view(-1, param_dim)
         num_frames = smpl_params.shape[0]
         
@@ -214,16 +217,20 @@ class StructuredMotionEncoder(nn.Module):
         left_hand_pose = poses[:, 75:120]        # Indices 75:120 (45 parameters)
         right_hand_pose = poses[:, 120:165]      # Indices 120:165 (45 parameters)
         
-        
-        # Expand betas to match the number of frames
+    # Expand betas to match the number of frames
         if betas.shape[0] == 1:
             betas = betas.expand(num_frames, -1)
+
+    # Get number of expression coefficients
+        num_expression_coeffs = self.smplx.num_expression_coeffs
+
 
   # Process frames in batches
         batch_size = 32
         vertices_list = []
         for i in range(0, num_frames, batch_size):
             batch_end = min(i + batch_size, num_frames)
+            batch_size_actual = batch_end - i  # Actual batch size
             
             # Extract batch parameters
             batch_betas = betas[i:batch_end]
@@ -236,6 +243,13 @@ class StructuredMotionEncoder(nn.Module):
             batch_reye_pose = reye_pose[i:batch_end]
             batch_trans = trans[i:batch_end]
             
+            # Create expression tensor with the correct batch size
+            expression = torch.zeros(
+                [batch_size_actual, num_expression_coeffs],
+                dtype=batch_betas.dtype,
+                device=batch_betas.device
+            )
+            
             # Forward pass through SMPL-X model
             smpl_output = self.smplx(
                 betas=batch_betas,
@@ -246,6 +260,7 @@ class StructuredMotionEncoder(nn.Module):
                 jaw_pose=batch_jaw_pose,
                 leye_pose=batch_leye_pose,
                 reye_pose=batch_reye_pose,
+                expression=expression,
                 transl=batch_trans,
                 pose2rot=True
             )
