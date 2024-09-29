@@ -283,6 +283,11 @@ class StructuredMotionEncoder(nn.Module):
         projected_vertices = self.project_to_2d(vertices, camera_params.view(-1, camera_params.shape[-1]))
         print(f"Projected vertices shape: {projected_vertices.shape}")
         
+        vertices = vertices.to(device)
+        faces = faces.to(device)
+        features = features.to(device)
+        projected_vertices = projected_vertices.to(device)
+
         feature_maps = self.rasterizer(projected_vertices, faces, expanded_codes)
         print(f"Feature maps shape after rasterization: {feature_maps.shape}")
         
