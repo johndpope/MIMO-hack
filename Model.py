@@ -269,7 +269,8 @@ class StructuredMotionEncoder(nn.Module):
                 reye_pose=batch_reye_pose,
                 expression=expression,
                 transl=batch_trans,
-                pose2rot=True
+                pose2rot=True,
+                device=device
             )
             vertices_list.append(smpl_output.vertices)
         
