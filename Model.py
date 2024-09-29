@@ -268,7 +268,7 @@ class StructuredMotionEncoder(nn.Module):
         
 
         vertices = torch.cat(vertices_list, dim=0)
-        faces = self.smpl.faces.unsqueeze(0).expand(smpl_params.shape[0], -1, -1)
+        faces = self.smplx.faces.unsqueeze(0).expand(smpl_params.shape[0], -1, -1)
         print(f"SMPL output shapes: vertices={vertices.shape}, faces={faces.shape}")
 
 
