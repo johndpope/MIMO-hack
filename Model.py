@@ -171,7 +171,7 @@ class StructuredMotionEncoder(nn.Module):
         self.feature_dim = feature_dim
         self.latent_codes = nn.Parameter(torch.randn(num_vertices, feature_dim))
         self.rasterizer = DifferentiableRasterizer(image_size)
-        self.smplx = SMPLX('./SMPLX_NEUTRAL.npz', batch_size=32)
+        self.smplx = SMPLX('./SMPLX_NEUTRAL.npz',   model_type='smplx',gender='neutral',batch_size=32)
         
         self.encoder = nn.Sequential(
             nn.Conv3d(feature_dim, 64, kernel_size=3, padding=1),
