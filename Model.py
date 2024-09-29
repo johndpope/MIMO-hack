@@ -174,7 +174,8 @@ class StructuredMotionEncoder(nn.Module):
         self.smplx = SMPLX('./SMPLX_NEUTRAL.npz',  
                             model_type='smplx',
                             gender='neutral', 
-                            use_pca=False)
+                            use_pca=False,
+                        device=self.device )
         
          # Convert faces to a PyTorch tensor and store it
         self.register_buffer(
