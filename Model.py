@@ -171,7 +171,7 @@ class StructuredMotionEncoder(nn.Module):
         self.feature_dim = feature_dim
         self.latent_codes = nn.Parameter(torch.randn(num_vertices, feature_dim))
         self.rasterizer = DifferentiableRasterizer(image_size)
-        self.smpl = SMPL('./SMPLX_NEUTRAL.pkl', batch_size=32)  # Set batch_size to match processing batch size
+        self.smpl = SMPL('./SMPLX_NEUTRAL.pkl', batch_size=32)
         
         self.encoder = nn.Sequential(
             nn.Conv3d(feature_dim, 64, kernel_size=3, padding=1),
@@ -200,10 +200,10 @@ class StructuredMotionEncoder(nn.Module):
         
         # Split smpl_params into its components
         betas = smpl_params[:, :10]
-        body_pose = smpl_params[:, 10:82]  # 72 parameters for body pose
-        global_orient = smpl_params[:, 82:85]  # 3 parameters for global orientation
+        global_orient = smpl_params[:, 10:13]
+        body_pose = smpl_params[:, 13:85]  # 72 parameters for body pose (24 joints * 3)
         
-        print(f"SMPL input shapes - betas: {betas.shape}, body_pose: {body_pose.shape}, global_orient: {global_orient.shape}")
+        print(f"SMPL input shapes - betas: {betas.shape}, global_orient: {global_orient.shape}, body_pose: {body_pose.shape}")
         
         try:
             # Process frames in batches to avoid memory issues
@@ -215,23 +215,18 @@ class StructuredMotionEncoder(nn.Module):
                 print(f"Processing batch {i//batch_size + 1}: frames {i} to {batch_end}")
                 
                 batch_betas = betas[i:batch_end]
-                batch_body_pose = body_pose[i:batch_end]
                 batch_global_orient = global_orient[i:batch_end]
-                
-                # Ensure correct shapes for SMPL input
-                batch_betas = batch_betas.view(-1, 10)
-                batch_body_pose = batch_body_pose.view(-1, 24, 3)  # Reshape to (batch_size, 24, 3) for 24 joints
-                batch_global_orient = batch_global_orient.view(-1, 1, 3)  # Reshape to (batch_size, 1, 3)
+                batch_body_pose = body_pose[i:batch_end]
                 
                 print(f"  Batch betas shape: {batch_betas.shape}")
-                print(f"  Batch body_pose shape: {batch_body_pose.shape}")
                 print(f"  Batch global_orient shape: {batch_global_orient.shape}")
+                print(f"  Batch body_pose shape: {batch_body_pose.shape}")
                 
                 smpl_output = self.smpl(
                     betas=batch_betas,
-                    body_pose=batch_body_pose[:, 1:, :].contiguous(),  # Exclude the first joint (global orientation)
                     global_orient=batch_global_orient,
-                    pose2rot=True  # Set to True as input poses are in axis-angle format
+                    body_pose=batch_body_pose,
+                    pose2rot=True
                 )
                 print(f"  SMPL output vertices shape: {smpl_output.vertices.shape}")
                 vertices_list.append(smpl_output.vertices)
@@ -243,8 +238,8 @@ class StructuredMotionEncoder(nn.Module):
             print(f"RuntimeError in SMPL forward pass: {str(e)}")
             print(f"SMPL input tensor sizes:")
             print(f"  betas: {batch_betas.size()}")
-            print(f"  body_pose: {batch_body_pose.size()}")
             print(f"  global_orient: {batch_global_orient.size()}")
+            print(f"  body_pose: {batch_body_pose.size()}")
             raise
 
         # Rest of the method remains unchanged
