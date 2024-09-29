@@ -74,9 +74,9 @@ def load_smplx_params(smpl_param_ckpt_fpath, body_only=True):
     poses = torch.cat([orient, body_pose, jaw_pose, leye_pose, reye_pose, left_hand_pose, right_hand_pose], dim=1)
     print(f"Combined pose shape: {poses.shape}")
 
-    if body_only:
-        print(f"Zeroing out non-body poses beyond index 72.")
-        poses[:, 72:] *= 0.0  # Zero out non-body poses
+    # if body_only:
+    #     print(f"Zeroing out non-body poses beyond index 72.")
+    #     poses[:, 72:] *= 0.0  # Zero out non-body poses
     
     trans = d['transl']
     print(f"Translational parameter shape: {trans.shape}")

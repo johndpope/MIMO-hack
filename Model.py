@@ -171,7 +171,7 @@ class StructuredMotionEncoder(nn.Module):
         self.feature_dim = feature_dim
         self.latent_codes = nn.Parameter(torch.randn(num_vertices, feature_dim))
         self.rasterizer = DifferentiableRasterizer(image_size)
-        self.smplx = SMPLX('./SMPLX_NEUTRAL.npz',   model_type='smplx',gender='neutral',batch_size=32)
+        self.smplx = SMPLX('./SMPLX_NEUTRAL.npz',   model_type='smplx',gender='neutral', use_pca=False,batch_size=32)
         
         self.encoder = nn.Sequential(
             nn.Conv3d(feature_dim, 64, kernel_size=3, padding=1),
@@ -202,17 +202,17 @@ class StructuredMotionEncoder(nn.Module):
         num_frames = smpl_params.shape[0]
         
         # Split smpl_params into poses and translations
-        poses = smpl_params[:, :165]
-        trans = smpl_params[:, 165:168]
-        
+        poses = smpl_params[:, :165]       # Shape: [num_frames, 165]
+        trans = smpl_params[:, 165:168]    # Shape: [num_frames, 3]
+
         # Now, split poses into individual components
-        global_orient = poses[:, :3]
-        body_pose = poses[:, 3:66]
-        jaw_pose = poses[:, 66:69]
-        leye_pose = poses[:, 69:72]
-        reye_pose = poses[:, 72:75]
-        left_hand_pose = poses[:, 75:120]
-        right_hand_pose = poses[:, 120:165]
+        global_orient = poses[:, :3]             # Indices 0:3
+        body_pose = poses[:, 3:66]               # Indices 3:66 (63 parameters)
+        jaw_pose = poses[:, 66:69]               # Indices 66:69
+        leye_pose = poses[:, 69:72]              # Indices 69:72
+        reye_pose = poses[:, 72:75]              # Indices 72:75
+        left_hand_pose = poses[:, 75:120]        # Indices 75:120 (45 parameters)
+        right_hand_pose = poses[:, 120:165]      # Indices 120:165 (45 parameters)
         
         
         # Expand betas to match the number of frames
