@@ -171,7 +171,7 @@ class StructuredMotionEncoder(nn.Module):
         self.feature_dim = feature_dim
         self.latent_codes = nn.Parameter(torch.randn(num_vertices, feature_dim))
         self.rasterizer = DifferentiableRasterizer(image_size)
-        self.smpl = SMPL('./SMPLX_NEUTRAL.pkl', batch_size=1)
+        self.smpl = SMPL('./SMPLX_NEUTRAL.pkl', batch_size=32)  # Set batch_size to match processing batch size
         
         self.encoder = nn.Sequential(
             nn.Conv3d(feature_dim, 64, kernel_size=3, padding=1),
@@ -213,14 +213,24 @@ class StructuredMotionEncoder(nn.Module):
             for i in range(0, smpl_params.shape[0], batch_size):
                 batch_end = min(i + batch_size, smpl_params.shape[0])
                 print(f"Processing batch {i//batch_size + 1}: frames {i} to {batch_end}")
-                print(f"  Batch betas shape: {betas[i:batch_end].shape}")
-                print(f"  Batch body_pose shape: {body_pose[i:batch_end].shape}")
-                print(f"  Batch global_orient shape: {global_orient[i:batch_end].shape}")
+                
+                batch_betas = betas[i:batch_end]
+                batch_body_pose = body_pose[i:batch_end]
+                batch_global_orient = global_orient[i:batch_end]
+                
+                # Ensure correct shapes for SMPL input
+                batch_betas = batch_betas.view(-1, 10)
+                batch_body_pose = batch_body_pose.view(-1, 23, 3)  # Reshape to (batch_size, 23, 3) for 23 joints
+                batch_global_orient = batch_global_orient.view(-1, 1, 3)  # Reshape to (batch_size, 1, 3)
+                
+                print(f"  Batch betas shape: {batch_betas.shape}")
+                print(f"  Batch body_pose shape: {batch_body_pose.shape}")
+                print(f"  Batch global_orient shape: {batch_global_orient.shape}")
                 
                 smpl_output = self.smpl(
-                    betas=betas[i:batch_end],
-                    body_pose=body_pose[i:batch_end],
-                    global_orient=global_orient[i:batch_end],
+                    betas=batch_betas,
+                    body_pose=batch_body_pose,
+                    global_orient=batch_global_orient,
                     pose2rot=True  # Set to True as input poses are in axis-angle format
                 )
                 print(f"  SMPL output vertices shape: {smpl_output.vertices.shape}")
@@ -232,11 +242,12 @@ class StructuredMotionEncoder(nn.Module):
         except RuntimeError as e:
             print(f"RuntimeError in SMPL forward pass: {str(e)}")
             print(f"SMPL input tensor sizes:")
-            print(f"  betas: {betas.size()}")
-            print(f"  body_pose: {body_pose.size()}")
-            print(f"  global_orient: {global_orient.size()}")
+            print(f"  betas: {batch_betas.size()}")
+            print(f"  body_pose: {batch_body_pose.size()}")
+            print(f"  global_orient: {batch_global_orient.size()}")
             raise
 
+        # Rest of the method remains unchanged
         projected_vertices = self.project_to_2d(vertices, camera_params.view(-1, camera_params.shape[-1]))
         print(f"Projected vertices shape: {projected_vertices.shape}")
         
