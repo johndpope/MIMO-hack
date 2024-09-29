@@ -237,7 +237,7 @@ class StructuredMotionEncoder(nn.Module):
             batch_trans = trans[i:batch_end]
             
             # Forward pass through SMPL-X model
-            smpl_output = self.smpl(
+            smpl_output = self.smplx(
                 betas=batch_betas,
                 global_orient=batch_global_orient,
                 body_pose=batch_body_pose,
