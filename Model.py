@@ -185,7 +185,7 @@ class StructuredMotionEncoder(nn.Module):
             nn.Linear(256, 512)
         )
     
-    def forward(self, smpl_params, camera_params):
+    def forward(self, betas, smpl_params, camera_params):
         print(f"StructuredMotionEncoder input shapes: smpl_params={smpl_params.shape}, camera_params={camera_params.shape}")
         
         batch_size, num_frames, param_dim = smpl_params.shape

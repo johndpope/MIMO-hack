@@ -142,7 +142,8 @@ def test_motion_encoder(data_dir, cam_ids_to_use):
     print("Performing forward pass...")
     try:
         with torch.no_grad():
-            motion_code = motion_encoder(smplx_params, camera_params)
+            motion_code = motion_encoder(betas, smplx_params, camera_params)
+
         print(f"Motion code shape: {motion_code.shape}")
         print(f"Motion code sample: {motion_code[0, :10]}")
     except RuntimeError as e:
