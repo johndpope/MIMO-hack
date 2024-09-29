@@ -180,8 +180,9 @@ class StructuredMotionEncoder(nn.Module):
          # Convert faces to a PyTorch tensor and store it
         self.register_buffer(
             'faces_tensor',
-            torch.tensor(self.smplx.faces.astype(np.int64), dtype=torch.long)
+            torch.tensor(self.smplx.faces.astype(np.int64), dtype=torch.long, device='cuda')
         )
+
         self.encoder = nn.Sequential(
             nn.Conv3d(feature_dim, 64, kernel_size=3, padding=1),
             nn.ReLU(),
