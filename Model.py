@@ -285,7 +285,7 @@ class StructuredMotionEncoder(nn.Module):
         
         vertices = vertices.to(device)
         faces = faces.to(device)
-        features = features.to(device)
+        # features = features.to(device)
         projected_vertices = projected_vertices.to(device)
 
         feature_maps = self.rasterizer(projected_vertices, faces, expanded_codes)
