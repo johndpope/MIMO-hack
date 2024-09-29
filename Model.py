@@ -176,6 +176,11 @@ class StructuredMotionEncoder(nn.Module):
                             gender='neutral', 
                             use_pca=False)
         
+         # Convert faces to a PyTorch tensor and store it
+        self.register_buffer(
+            'faces_tensor',
+            torch.tensor(self.smplx.faces.astype(np.int64), dtype=torch.long)
+        )
         self.encoder = nn.Sequential(
             nn.Conv3d(feature_dim, 64, kernel_size=3, padding=1),
             nn.ReLU(),
@@ -268,7 +273,9 @@ class StructuredMotionEncoder(nn.Module):
         
 
         vertices = torch.cat(vertices_list, dim=0)
-        faces = self.smplx.faces.unsqueeze(0).expand(smpl_params.shape[0], -1, -1)
+         # Move faces_tensor to the correct device and expand as needed
+        faces = self.faces_tensor.to(device)
+        faces = faces.unsqueeze(0).expand(vertices.shape[0], -1, -1)
         print(f"SMPL output shapes: vertices={vertices.shape}, faces={faces.shape}")
 
 
