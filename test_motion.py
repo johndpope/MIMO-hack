@@ -134,7 +134,9 @@ def test_motion_encoder(data_dir, cam_ids_to_use):
     camera_params = camera_params.unsqueeze(0)
     print(f"Final shapes: smplx_params={smplx_params.shape}, camera_params={camera_params.shape}")
 
-    device = next(motion_encoder.parameters()).device
+    # device = next(motion_encoder.parameters()).device
+    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+
     print(f"Moving tensors to device: {device}")
     smplx_params = smplx_params.to(device)
     camera_params = camera_params.to(device)
