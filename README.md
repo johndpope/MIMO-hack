@@ -40,6 +40,11 @@ openxlab dataset download --dataset-repo OpenXDLab/SynBody --source-path /README
 ```
 
 
+## Julia Models - neutral
+download this 
+https://smpl-x.is.tue.mpg.de/download.php
+
+
 
 ## Sapiens - get image - produce depths / normals / pose
 https://github.com/facebookresearch/sapiens
