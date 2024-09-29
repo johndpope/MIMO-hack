@@ -195,15 +195,16 @@ class StructuredMotionEncoder(nn.Module):
     
     def forward(self, betas, smpl_params, camera_params):
         print(f"StructuredMotionEncoder input shapes: smpl_params={smpl_params.shape}, camera_params={camera_params.shape}")
-        
+        print(f"betas device: {betas.device}")
+        print(f"smpl_params device: {smpl_params.device}")
+        print(f"camera_params device: {camera_params.device}")
         batch_size, num_frames, param_dim = smpl_params.shape
         device = smpl_params.device
         
         expanded_codes = self.latent_codes.unsqueeze(0).expand(batch_size * num_frames, -1, -1)
         print(f"Expanded codes shape: {expanded_codes.shape}")
         
-        batch_size, num_frames, param_dim = smpl_params.shape
-        device = smpl_params.device
+  
         
         # Reshape smpl_params to [num_frames, param_dim]
         smpl_params = smpl_params.view(-1, param_dim)
