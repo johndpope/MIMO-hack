@@ -220,7 +220,7 @@ class StructuredMotionEncoder(nn.Module):
                 
                 # Ensure correct shapes for SMPL input
                 batch_betas = batch_betas.view(-1, 10)
-                batch_body_pose = batch_body_pose.view(-1, 23, 3)  # Reshape to (batch_size, 23, 3) for 23 joints
+                batch_body_pose = batch_body_pose.view(-1, 24, 3)  # Reshape to (batch_size, 24, 3) for 24 joints
                 batch_global_orient = batch_global_orient.view(-1, 1, 3)  # Reshape to (batch_size, 1, 3)
                 
                 print(f"  Batch betas shape: {batch_betas.shape}")
@@ -229,7 +229,7 @@ class StructuredMotionEncoder(nn.Module):
                 
                 smpl_output = self.smpl(
                     betas=batch_betas,
-                    body_pose=batch_body_pose,
+                    body_pose=batch_body_pose[:, 1:, :].contiguous(),  # Exclude the first joint (global orientation)
                     global_orient=batch_global_orient,
                     pose2rot=True  # Set to True as input poses are in axis-angle format
                 )
@@ -237,7 +237,7 @@ class StructuredMotionEncoder(nn.Module):
                 vertices_list.append(smpl_output.vertices)
             
             vertices = torch.cat(vertices_list, dim=0)
-            faces = self.smpl.faces.unsqueeze(0).expand(batch_size * num_frames, -1, -1)
+            faces = self.smpl.faces.unsqueeze(0).expand(smpl_params.shape[0], -1, -1)
             print(f"SMPL output shapes: vertices={vertices.shape}, faces={faces.shape}")
         except RuntimeError as e:
             print(f"RuntimeError in SMPL forward pass: {str(e)}")
