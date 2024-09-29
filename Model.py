@@ -6,7 +6,7 @@ from torch.utils.data import DataLoader, Dataset
 import torchvision.models as models
 import clip
 import numpy as np
-from smplx import SMPL
+from smplx import SMPLX
 from pytorch3d.structures import Meshes
 from pytorch3d.renderer import (
     PerspectiveCameras,
@@ -171,7 +171,7 @@ class StructuredMotionEncoder(nn.Module):
         self.feature_dim = feature_dim
         self.latent_codes = nn.Parameter(torch.randn(num_vertices, feature_dim))
         self.rasterizer = DifferentiableRasterizer(image_size)
-        self.smpl = SMPL('./SMPLX_NEUTRAL.pkl', batch_size=32)
+        self.smplx = SMPLX('./SMPLX_NEUTRAL.pkl', batch_size=32)
         
         self.encoder = nn.Sequential(
             nn.Conv3d(feature_dim, 64, kernel_size=3, padding=1),
@@ -198,11 +198,20 @@ class StructuredMotionEncoder(nn.Module):
         smpl_params = smpl_params.view(-1, param_dim)
         print(f"Reshaped smpl_params shape: {smpl_params.shape}")
         
-        # Split smpl_params into its components
+        # Update the parameter dimensions and extraction
         betas = smpl_params[:, :10]
         global_orient = smpl_params[:, 10:13]
-        body_pose = smpl_params[:, 13:85]  # 72 parameters for body pose (24 joints * 3)
+        body_pose = smpl_params[:, 13:76]         # 63 parameters
+        left_hand_pose = smpl_params[:, 76:121]   # 45 parameters
+        right_hand_pose = smpl_params[:, 121:166] # 45 parameters
+        jaw_pose = smpl_params[:, 166:169]        # 3 parameters
+        leye_pose = smpl_params[:, 169:172]       # 3 parameters
+        reye_pose = smpl_params[:, 172:175]       # 3 parameters
         
+        # Ensure that the sum of pose parameters matches the total pose dimension
+        assert reye_pose.shape[1] == 3, "Expected reye_pose to have 3 parameters"
+
+
         print(f"SMPL input shapes - betas: {betas.shape}, global_orient: {global_orient.shape}, body_pose: {body_pose.shape}")
         
         try:
@@ -212,20 +221,25 @@ class StructuredMotionEncoder(nn.Module):
             print(f"Total number of frames to process: {smpl_params.shape[0]}")
             for i in range(0, smpl_params.shape[0], batch_size):
                 batch_end = min(i + batch_size, smpl_params.shape[0])
-                print(f"Processing batch {i//batch_size + 1}: frames {i} to {batch_end}")
-                
+                # Extract batch parameters
                 batch_betas = betas[i:batch_end]
                 batch_global_orient = global_orient[i:batch_end]
                 batch_body_pose = body_pose[i:batch_end]
-                
-                print(f"  Batch betas shape: {batch_betas.shape}")
-                print(f"  Batch global_orient shape: {batch_global_orient.shape}")
-                print(f"  Batch body_pose shape: {batch_body_pose.shape}")
-                
-                smpl_output = self.smpl(
+                batch_left_hand_pose = left_hand_pose[i:batch_end]
+                batch_right_hand_pose = right_hand_pose[i:batch_end]
+                batch_jaw_pose = jaw_pose[i:batch_end]
+                batch_leye_pose = leye_pose[i:batch_end]
+                batch_reye_pose = reye_pose[i:batch_end]
+                # Forward pass through SMPLX model
+                smpl_output = self.smplx(
                     betas=batch_betas,
                     global_orient=batch_global_orient,
                     body_pose=batch_body_pose,
+                    left_hand_pose=batch_left_hand_pose,
+                    right_hand_pose=batch_right_hand_pose,
+                    jaw_pose=batch_jaw_pose,
+                    leye_pose=batch_leye_pose,
+                    reye_pose=batch_reye_pose,
                     pose2rot=True
                 )
                 print(f"  SMPL output vertices shape: {smpl_output.vertices.shape}")
