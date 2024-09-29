@@ -194,67 +194,68 @@ class StructuredMotionEncoder(nn.Module):
         expanded_codes = self.latent_codes.unsqueeze(0).expand(batch_size * num_frames, -1, -1)
         print(f"Expanded codes shape: {expanded_codes.shape}")
         
+        batch_size, num_frames, param_dim = smpl_params.shape
+        device = smpl_params.device
+        
         # Reshape smpl_params to [batch_size * num_frames, param_dim]
         smpl_params = smpl_params.view(-1, param_dim)
-        print(f"Reshaped smpl_params shape: {smpl_params.shape}")
+        num_frames = smpl_params.shape[0]
         
-        # Update the parameter dimensions and extraction
-        betas = smpl_params[:, :10]
-        global_orient = smpl_params[:, 10:13]
-        body_pose = smpl_params[:, 13:76]         # 63 parameters
-        left_hand_pose = smpl_params[:, 76:121]   # 45 parameters
-        right_hand_pose = smpl_params[:, 121:166] # 45 parameters
-        jaw_pose = smpl_params[:, 166:169]        # 3 parameters
-        leye_pose = smpl_params[:, 169:172]       # 3 parameters
-        reye_pose = smpl_params[:, 172:175]       # 3 parameters
+        # Split smpl_params into poses and translations
+        poses = smpl_params[:, :165]
+        trans = smpl_params[:, 165:168]
         
-        # Ensure that the sum of pose parameters matches the total pose dimension
-        assert reye_pose.shape[1] == 3, "Expected reye_pose to have 3 parameters"
+        # Now, split poses into individual components
+        global_orient = poses[:, :3]
+        body_pose = poses[:, 3:66]
+        jaw_pose = poses[:, 66:69]
+        leye_pose = poses[:, 69:72]
+        reye_pose = poses[:, 72:75]
+        left_hand_pose = poses[:, 75:120]
+        right_hand_pose = poses[:, 120:165]
+        
+        
+        # Expand betas to match the number of frames
+        if betas.shape[0] == 1:
+            betas = betas.expand(num_frames, -1)
 
-
-        print(f"SMPL input shapes - betas: {betas.shape}, global_orient: {global_orient.shape}, body_pose: {body_pose.shape}")
-        
-        try:
-            # Process frames in batches to avoid memory issues
-            batch_size = 32
-            vertices_list = []
-            print(f"Total number of frames to process: {smpl_params.shape[0]}")
-            for i in range(0, smpl_params.shape[0], batch_size):
-                batch_end = min(i + batch_size, smpl_params.shape[0])
-                # Extract batch parameters
-                batch_betas = betas[i:batch_end]
-                batch_global_orient = global_orient[i:batch_end]
-                batch_body_pose = body_pose[i:batch_end]
-                batch_left_hand_pose = left_hand_pose[i:batch_end]
-                batch_right_hand_pose = right_hand_pose[i:batch_end]
-                batch_jaw_pose = jaw_pose[i:batch_end]
-                batch_leye_pose = leye_pose[i:batch_end]
-                batch_reye_pose = reye_pose[i:batch_end]
-                # Forward pass through SMPLX model
-                smpl_output = self.smplx(
-                    betas=batch_betas,
-                    global_orient=batch_global_orient,
-                    body_pose=batch_body_pose,
-                    left_hand_pose=batch_left_hand_pose,
-                    right_hand_pose=batch_right_hand_pose,
-                    jaw_pose=batch_jaw_pose,
-                    leye_pose=batch_leye_pose,
-                    reye_pose=batch_reye_pose,
-                    pose2rot=True
-                )
-                print(f"  SMPL output vertices shape: {smpl_output.vertices.shape}")
-                vertices_list.append(smpl_output.vertices)
+  # Process frames in batches
+        batch_size = 32
+        vertices_list = []
+        for i in range(0, num_frames, batch_size):
+            batch_end = min(i + batch_size, num_frames)
             
-            vertices = torch.cat(vertices_list, dim=0)
-            faces = self.smpl.faces.unsqueeze(0).expand(smpl_params.shape[0], -1, -1)
-            print(f"SMPL output shapes: vertices={vertices.shape}, faces={faces.shape}")
-        except RuntimeError as e:
-            print(f"RuntimeError in SMPL forward pass: {str(e)}")
-            print(f"SMPL input tensor sizes:")
-            print(f"  betas: {batch_betas.size()}")
-            print(f"  global_orient: {batch_global_orient.size()}")
-            print(f"  body_pose: {batch_body_pose.size()}")
-            raise
+            # Extract batch parameters
+            batch_betas = betas[i:batch_end]
+            batch_global_orient = global_orient[i:batch_end]
+            batch_body_pose = body_pose[i:batch_end]
+            batch_left_hand_pose = left_hand_pose[i:batch_end]
+            batch_right_hand_pose = right_hand_pose[i:batch_end]
+            batch_jaw_pose = jaw_pose[i:batch_end]
+            batch_leye_pose = leye_pose[i:batch_end]
+            batch_reye_pose = reye_pose[i:batch_end]
+            batch_trans = trans[i:batch_end]
+            
+            # Forward pass through SMPL-X model
+            smpl_output = self.smpl(
+                betas=batch_betas,
+                global_orient=batch_global_orient,
+                body_pose=batch_body_pose,
+                left_hand_pose=batch_left_hand_pose,
+                right_hand_pose=batch_right_hand_pose,
+                jaw_pose=batch_jaw_pose,
+                leye_pose=batch_leye_pose,
+                reye_pose=batch_reye_pose,
+                transl=batch_trans,
+                pose2rot=True
+            )
+            vertices_list.append(smpl_output.vertices)
+        
+
+        vertices = torch.cat(vertices_list, dim=0)
+        faces = self.smpl.faces.unsqueeze(0).expand(smpl_params.shape[0], -1, -1)
+        print(f"SMPL output shapes: vertices={vertices.shape}, faces={faces.shape}")
+
 
         # Rest of the method remains unchanged
         projected_vertices = self.project_to_2d(vertices, camera_params.view(-1, camera_params.shape[-1]))
