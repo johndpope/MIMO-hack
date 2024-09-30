@@ -30,6 +30,10 @@ from diffusers import DDIMScheduler,DDPMScheduler
 from MimoDataset import MIMODataset
 import nvdiffrast.torch as dr
 
+import os
+os.environ['PYTORCH_CUDA_ALLOC_CONF'] = 'expandable_segments:True'
+
+
 class TemporalAttentionLayer(nn.Module):
     def __init__(self, channels, num_head_channels, num_groups=32):
         super().__init__()
@@ -149,12 +153,21 @@ class DifferentiableRasterizer(nn.Module):
         # Compute light direction (you may want to make this configurable)
         light_dir = torch.tensor([0.0, 0.0, 1.0], device=vertices.device).expand_as(interpolated_normals)
         
+        
         # Compute diffuse shading
         diffuse = torch.sum(interpolated_normals * light_dir, dim=-1, keepdim=True).clamp(min=0)
         print(f"Diffuse shading shape: {diffuse.shape}")
         
+        # Before applying diffuse shading
+        del normals
+        del interpolated_normals
+        torch.cuda.empty_cache()
+
+
         # Apply diffuse shading to feature maps
-        shaded_features = feature_maps * diffuse
+        # In-place multiplication to save memory
+        shaded_features = feature_maps
+        shaded_features.mul_(diffuse)
         print(f"Final shaded features shape: {shaded_features.shape}")
 
         return shaded_features

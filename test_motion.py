@@ -93,7 +93,7 @@ def load_smplx_params(smpl_param_ckpt_fpath, body_only=True):
 def test_motion_encoder(data_dir, cam_ids_to_use):
     print("Initializing StructuredMotionEncoder...")
     num_vertices = 6890
-    feature_dim = 64
+    feature_dim = 32
     image_size = 256
     motion_encoder = StructuredMotionEncoder(num_vertices, feature_dim, image_size)
     motion_encoder = motion_encoder.to('cuda')
@@ -149,7 +149,7 @@ def test_motion_encoder(data_dir, cam_ids_to_use):
     camera_params = camera_params.to(device)
     betas = betas.to(device)
 
-    print("Performing forward pass...")
+    print("⛹ Performing forward pass...")
     try:
         with torch.no_grad():
             motion_code = motion_encoder(betas, smplx_params, camera_params)
