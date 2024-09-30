@@ -89,7 +89,6 @@ def load_smplx_params(smpl_param_ckpt_fpath, body_only=True):
     return betas, poses, trans
 
 
-
 def test_motion_encoder(data_dir, cam_ids_to_use):
     print("Initializing StructuredMotionEncoder...")
     num_vertices = 10475  # SMPL-X has 10475 vertices
@@ -97,6 +96,7 @@ def test_motion_encoder(data_dir, cam_ids_to_use):
     image_size = 128
     motion_encoder = StructuredMotionEncoder(num_vertices, feature_dim, image_size)
     motion_encoder = motion_encoder.to('cuda')
+
     print("Loading camera parameters...")
     cam_data = get_cams(data_dir)
     print("Camera data:", cam_data)
@@ -121,36 +121,22 @@ def test_motion_encoder(data_dir, cam_ids_to_use):
         cx = torch.tensor([K[2]], dtype=torch.float32)
         cy = torch.tensor([K[5]], dtype=torch.float32)
     
-    # Concatenate all parameters
-    cam_params = torch.cat([R, T, fx, fy, cx, cy])
-    camera_params.append(cam_params)
+        # Concatenate all parameters for this camera
+        cam_params = torch.cat([R, T, fx, fy, cx, cy])
+        camera_params.append(cam_params)
 
     camera_params = torch.stack(camera_params)
-    print(f"Initial camera parameters shape: {camera_params.shape}")
-    print(f"Initial camera parameters first few values: {camera_params[:5, :5]}")
+    print(f"Camera parameters shape: {camera_params.shape}")
 
     num_frames = poses.shape[0]
     num_cameras = len(cam_ids_to_use)
     print(f"Number of frames: {num_frames}")
     print(f"Number of cameras: {num_cameras}")
 
-    print("Repeating camera params for each frame...")
-    camera_params = camera_params.unsqueeze(0).repeat(num_frames, 1, 1)
-    print(f"Camera parameters shape after repeat: {camera_params.shape}")
-    print(f"Camera parameters first few values after repeat: {camera_params[:5, :5, :5]}")
-
-    
-
     print("Combining poses and trans...")
     smplx_params = torch.cat([poses, trans], dim=-1)
     print(f"SMPLX parameters shape: {smplx_params.shape}")
 
-    print("Adding batch dimension...")
-    smplx_params = smplx_params.unsqueeze(0)
-    camera_params = camera_params.unsqueeze(0)
-    print(f"Final shapes: smplx_params={smplx_params.shape}, camera_params={camera_params.shape}")
-
-    # device = next(motion_encoder.parameters()).device
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 
     print(f"Moving tensors to device: {device}")
@@ -158,29 +144,32 @@ def test_motion_encoder(data_dir, cam_ids_to_use):
     camera_params = camera_params.to(device)
     betas = betas.to(device)
 
-
-    # Assume smplx_params and camera_params are already prepared
-    # Process frames in batches (e.g., batch_size = 8)
+    # Process frames in batches for each camera
     batch_size = 8
-    num_frames = smplx_params.shape[1]
-    motion_codes = []
+    motion_codes_per_camera = []
 
-    for start_idx in range(0, num_frames, batch_size):
-        end_idx = min(start_idx + batch_size, num_frames)
-        batch_smplx_params = smplx_params[:, start_idx:end_idx, :]
-        batch_camera_params = camera_params[:, start_idx:end_idx, :]
+    for cam_idx in range(num_cameras):
+        print(f"Processing camera {cam_idx + 1}/{num_cameras}")
+        cam_motion_codes = []
 
-        # Move tensors to device if not already
-        batch_smplx_params = batch_smplx_params.to(device)
-        batch_camera_params = batch_camera_params.to(device)
-        betas = betas.to(device)
+        for start_idx in range(0, num_frames, batch_size):
+            end_idx = min(start_idx + batch_size, num_frames)
+            batch_smplx_params = smplx_params[start_idx:end_idx].unsqueeze(0)
+            batch_camera_params = camera_params[cam_idx].unsqueeze(0).unsqueeze(0).repeat(1, end_idx - start_idx, 1)
 
-        # Forward pass
-        frame_motion_code = motion_encoder(betas, batch_smplx_params, batch_camera_params)
-        motion_codes.append(frame_motion_code)
+            # Forward pass
+            frame_motion_code = motion_encoder(betas, batch_smplx_params, batch_camera_params)
+            cam_motion_codes.append(frame_motion_code)
 
-    # Combine motion codes if needed
-    motion_codes = torch.cat(motion_codes, dim=2)  # Shape: [batch_size, code_dim, num_frames]
+        # Combine motion codes for this camera
+        cam_motion_codes = torch.cat(cam_motion_codes, dim=2)  # Shape: [1, code_dim, num_frames]
+        motion_codes_per_camera.append(cam_motion_codes)
+
+    # Combine motion codes for all cameras
+    all_motion_codes = torch.cat(motion_codes_per_camera, dim=0)  # Shape: [num_cameras, code_dim, num_frames]
+
+    print(f"Final motion codes shape: {all_motion_codes.shape}")
+    return all_motion_codes
         
 
 if __name__ == "__main__":
