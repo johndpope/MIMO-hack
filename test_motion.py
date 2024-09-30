@@ -92,9 +92,9 @@ def load_smplx_params(smpl_param_ckpt_fpath, body_only=True):
 
 def test_motion_encoder(data_dir, cam_ids_to_use):
     print("Initializing StructuredMotionEncoder...")
-    num_vertices = 6890
+    num_vertices = 10475  # SMPL-X has 10475 vertices
     feature_dim = 32
-    image_size = 256
+    image_size = 128
     motion_encoder = StructuredMotionEncoder(num_vertices, feature_dim, image_size)
     motion_encoder = motion_encoder.to('cuda')
     print("Loading camera parameters...")
@@ -149,19 +149,30 @@ def test_motion_encoder(data_dir, cam_ids_to_use):
     camera_params = camera_params.to(device)
     betas = betas.to(device)
 
-    print("⛹ Performing forward pass...")
-    try:
-        with torch.no_grad():
-            motion_code = motion_encoder(betas, smplx_params, camera_params)
 
-        print(f"Motion code shape: {motion_code.shape}")
-        print(f"Motion code sample: {motion_code[0, :10]}")
-    except RuntimeError as e:
-        print(f"RuntimeError occurred: {str(e)}")
-        print("Tensor shapes:")
-        print(f"  smplx_params: {smplx_params.shape}")
-        print(f"  camera_params: {camera_params.shape}")
-        raise
+    # Assume smplx_params and camera_params are already prepared
+    # Process frames in batches (e.g., batch_size = 8)
+    batch_size = 8
+    num_frames = smplx_params.shape[1]
+    motion_codes = []
+
+    for start_idx in range(0, num_frames, batch_size):
+        end_idx = min(start_idx + batch_size, num_frames)
+        batch_smplx_params = smplx_params[:, start_idx:end_idx, :]
+        batch_camera_params = camera_params[:, start_idx:end_idx, :]
+
+        # Move tensors to device if not already
+        batch_smplx_params = batch_smplx_params.to(device)
+        batch_camera_params = batch_camera_params.to(device)
+        betas = betas.to(device)
+
+        # Forward pass
+        frame_motion_code = motion_encoder(betas, batch_smplx_params, batch_camera_params)
+        motion_codes.append(frame_motion_code)
+
+    # Combine motion codes if needed
+    motion_codes = torch.cat(motion_codes, dim=2)  # Shape: [batch_size, code_dim, num_frames]
+        
 
 if __name__ == "__main__":
     data_dir = '/media/oem/12TB/meshavatar/avatarrex_zzr'

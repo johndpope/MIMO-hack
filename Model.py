@@ -91,7 +91,7 @@ class DifferentiableRasterizer(nn.Module):
         vertex_colors = vertex_colors.contiguous()  # Shape: [batch_size, num_vertices, feature_dim]
         print(f"Vertices shape after contiguous: {vertices.shape}")
         print(f"Vertex colors shape after contiguous: {vertex_colors.shape}")
-
+        print(f"vertex_colors min: {vertex_colors.min()}, max: {vertex_colors.max()}")
         # Create perspective projection matrix
         fov = 60
         aspect_ratio = 1.0
@@ -132,6 +132,9 @@ class DifferentiableRasterizer(nn.Module):
             print(f"vertex_colors shape: {vertex_colors.shape}, rast shape: {rast.shape}, faces shape: {faces.shape}")
             raise
 
+        print(f"feature_maps after interpolation min: {feature_maps.min()}, max: {feature_maps.max()}")
+
+
         # Compute and interpolate normals
         print("Computing normals...")
         normals = self.compute_normals(vertices, faces)
@@ -149,14 +152,14 @@ class DifferentiableRasterizer(nn.Module):
             raise
 
     
-
+        print(f"interpolated_normals min: {interpolated_normals.min()}, max: {interpolated_normals.max()}")
         # Compute light direction (you may want to make this configurable)
-        light_dir = torch.tensor([0.0, 0.0, 1.0], device=vertices.device).expand_as(interpolated_normals)
-        
+        light_dir = torch.tensor([0.0, 0.0, 1.0], device=vertices.device).view(1, 1, 1, 3).expand_as(interpolated_normals)
+
         
         # Compute diffuse shading
         diffuse = torch.sum(interpolated_normals * light_dir, dim=-1, keepdim=True).clamp(min=0)
-        print(f"Diffuse shading shape: {diffuse.shape}")
+        print(f"diffuse min: {diffuse.min()}, max: {diffuse.max()}")
         
         # Before applying diffuse shading
         del normals
@@ -169,6 +172,18 @@ class DifferentiableRasterizer(nn.Module):
         shaded_features = feature_maps
         shaded_features.mul_(diffuse)
         print(f"Final shaded features shape: {shaded_features.shape}")
+
+    # After computing shaded_features
+        shaded_features = shaded_features.permute(0, 3, 1, 2)  # Rearrange to [batch_size, C, H, W]
+        image_tensor = shaded_features[0]  # Assuming batch_size is 1
+
+        print(f"feature_maps min: {feature_maps.min()}, max: {feature_maps.max()}")
+        print(f"diffuse min: {diffuse.min()}, max: {diffuse.max()}")
+        # Save the image
+        if torch.isnan(shaded_features).any():
+            print("Warning: shaded_features contains NaN values.")
+
+        self.save_rasterized_image(image_tensor)
 
         return shaded_features
     
@@ -238,7 +253,49 @@ class DifferentiableRasterizer(nn.Module):
         print("--- compute_normals end ---")
         return normals
 
+    def save_rasterized_image(self, image_tensor):
+        # Convert to NumPy array
+        image_np = image_tensor.detach().cpu().numpy()
+        print(f"Initial image_np shape: {image_np.shape}")
 
+        # Handle channel dimension
+        if image_np.shape[0] >= 3:
+            image_np = image_np[:3]  # Take first 3 channels
+            image_np = image_np.transpose(1, 2, 0)  # [C, H, W] -> [H, W, C]
+        elif image_np.shape[0] == 1:
+            image_np = image_np.squeeze(0)  # Grayscale image of shape [H, W]
+        else:
+            # For other channel sizes, average over channels to get a grayscale image
+            image_np = image_np.mean(axis=0)  # Shape: [H, W]
+        
+        print(f"Processed image_np shape: {image_np.shape}")
+
+        # Check for NaNs and handle them
+        if np.isnan(image_np).any():
+            print("Warning: image_np contains NaN values. Replacing NaNs with zeros.")
+            image_np = np.nan_to_num(image_np, nan=0.0)
+
+        # Normalize and scale
+        min_val = image_np.min()
+        max_val = image_np.max()
+        if max_val - min_val == 0:
+            print("Warning: max_val equals min_val. Setting image to gray (128).")
+            image_np = np.full_like(image_np, 128, dtype=np.uint8)
+        else:
+            image_np = (image_np - min_val) / (max_val - min_val)
+            image_np = (image_np * 255).astype(np.uint8)
+
+        # Save the image
+        from PIL import Image
+        try:
+            image_pil = Image.fromarray(image_np)
+            image_pil.save('rasterized_image.png')
+            print("Image saved successfully as 'rasterized_image.png'.")
+        except Exception as e:
+            print(f"🔥 Error saving image: {e}")
+            print(f"image_np shape: {image_np.shape}, dtype: {image_np.dtype}")
+
+        
 def move_to_device(module, device):
     for param in module.parameters():
         param.data = param.data.to(device)
@@ -252,7 +309,8 @@ class StructuredMotionEncoder(nn.Module):
         super(StructuredMotionEncoder, self).__init__()
         self.num_vertices = num_vertices
         self.feature_dim = feature_dim
-        self.latent_codes = nn.Parameter(torch.randn(num_vertices, feature_dim))
+        self.image_size = image_size
+        self.latent_codes = nn.Parameter(torch.randn(self.num_vertices, self.feature_dim))
         self.rasterizer = DifferentiableRasterizer(image_size)
         self.smplx = SMPLX('./SMPLX_NEUTRAL.npz',  
                             model_type='smplx',
@@ -278,153 +336,107 @@ class StructuredMotionEncoder(nn.Module):
             nn.Linear(256, 512)
         )
 
-        
     def forward(self, betas, smpl_params, camera_params):
         print(f"StructuredMotionEncoder input shapes: smpl_params={smpl_params.shape}, camera_params={camera_params.shape}")
         print(f"betas device: {betas.device}")
         print(f"smpl_params device: {smpl_params.device}")
         print(f"camera_params device: {camera_params.device}")
-        batch_size, num_frames, param_dim = smpl_params.shape
+
+        print(f"latent_codes min: {self.latent_codes.min()}, max: {self.latent_codes.max()}")
+
+
+        # Check the dimensionality of smpl_params
+        if smpl_params.dim() == 3:
+            batch_size, num_frames, param_dim = smpl_params.shape
+        elif smpl_params.dim() == 2:
+            batch_size, param_dim = smpl_params.shape
+            num_frames = 1
+            # Add a singleton dimension to smpl_params and camera_params for consistency
+            smpl_params = smpl_params.unsqueeze(1)  # Shape: [batch_size, 1, param_dim]
+            camera_params = camera_params.unsqueeze(1)  # Shape: [batch_size, 1, cam_param_dim]
+        else:
+            raise ValueError(f"Invalid shape for smpl_params: {smpl_params.shape}")
+
         device = smpl_params.device
 
-        # Ensure SMPLX model is on the correct device
-        self.smplx = self.smplx.to(smpl_params.device)
-        move_to_device(self.smplx, smpl_params.device)
-        
-        expanded_codes = self.latent_codes.unsqueeze(0).expand(batch_size * num_frames, -1, -1)
-        print(f"Expanded codes shape: {expanded_codes.shape}")
-        
-        # Reshape smpl_params to [num_frames, param_dim]
-        smpl_params = smpl_params.view(-1, param_dim)
-        num_frames = smpl_params.shape[0]
-        
-        # Split smpl_params into poses and translations
-        poses = smpl_params[:, :165]       # Shape: [num_frames, 165]
-        trans = smpl_params[:, 165:168]    # Shape: [num_frames, 3]
-        
-        # Now, split poses into individual components
-        global_orient = poses[:, :3]             # Indices 0:3
-        body_pose = poses[:, 3:66]               # Indices 3:66 (63 parameters)
-        jaw_pose = poses[:, 66:69]               # Indices 66:69
-        leye_pose = poses[:, 69:72]              # Indices 69:72
-        reye_pose = poses[:, 72:75]              # Indices 72:75
-        left_hand_pose = poses[:, 75:120]        # Indices 75:120 (45 parameters)
-        right_hand_pose = poses[:, 120:165]      # Indices 120:165 (45 parameters)
-        
-    # Expand betas to match the number of frames
-        if betas.shape[0] == 1:
-            betas = betas.expand(num_frames, -1)
+        self.smplx = self.smplx.to(device)
+        move_to_device(self.smplx, device)
 
-    # Get number of expression coefficients
-        num_expression_coeffs = self.smplx.num_expression_coeffs
+        motion_code_list = []
 
+        for frame_idx in range(num_frames):
+            # Extract parameters for the current frame
+            frame_smpl_params = smpl_params[:, frame_idx, :]
+            frame_camera_params = camera_params[:, frame_idx, :].squeeze(1)
 
+            # Split smpl_params into poses and translations
+            poses = frame_smpl_params[:, :165]       # Shape: [batch_size, 165]
+            trans = frame_smpl_params[:, 165:168]    # Shape: [batch_size, 3]
 
-  # Process frames in batches
-        batch_size = 1
-        vertices_list = []
-        for i in range(0, num_frames, batch_size):
-            batch_end = min(i + batch_size, num_frames)
-            batch_size_actual = batch_end - i  # Actual batch size
-            
-            # Extract batch parameters
-            batch_betas = betas[i:batch_end]
-            batch_global_orient = global_orient[i:batch_end]
-            batch_body_pose = body_pose[i:batch_end]
-            batch_left_hand_pose = left_hand_pose[i:batch_end]
-            batch_right_hand_pose = right_hand_pose[i:batch_end]
-            batch_jaw_pose = jaw_pose[i:batch_end]
-            batch_leye_pose = leye_pose[i:batch_end]
-            batch_reye_pose = reye_pose[i:batch_end]
-            batch_trans = trans[i:batch_end]
-            
-            # Create expression tensor with the correct batch size
+            # Now, split poses into individual components
+            global_orient = poses[:, :3]             # Indices 0:3
+            body_pose = poses[:, 3:66]               # Indices 3:66 (63 parameters)
+            jaw_pose = poses[:, 66:69]               # Indices 66:69
+            leye_pose = poses[:, 69:72]              # Indices 69:72
+            reye_pose = poses[:, 72:75]              # Indices 72:75
+            left_hand_pose = poses[:, 75:120]        # Indices 75:120 (45 parameters)
+            right_hand_pose = poses[:, 120:165]      # Indices 120:165 (45 parameters)
+
+            # Prepare betas
+            frame_betas = betas if betas.shape[0] > 1 else betas.expand(frame_smpl_params.shape[0], -1)
+
+            # Define expression
+            num_expression_coeffs = self.smplx.num_expression_coeffs
             expression = torch.zeros(
-                [batch_size_actual, num_expression_coeffs],
-                dtype=batch_betas.dtype,
-                device=batch_betas.device
+                [frame_smpl_params.shape[0], num_expression_coeffs],
+                dtype=frame_smpl_params.dtype,
+                device=frame_smpl_params.device
             )
-            
-            # Forward pass through SMPL-X model
+
+            # SMPL model forward pass
             smpl_output = self.smplx(
-                betas=batch_betas,
-                global_orient=batch_global_orient,
-                body_pose=batch_body_pose,
-                left_hand_pose=batch_left_hand_pose,
-                right_hand_pose=batch_right_hand_pose,
-                jaw_pose=batch_jaw_pose,
-                leye_pose=batch_leye_pose,
-                reye_pose=batch_reye_pose,
+                betas=frame_betas,
+                global_orient=global_orient,
+                body_pose=body_pose,
+                left_hand_pose=left_hand_pose,
+                right_hand_pose=right_hand_pose,
+                jaw_pose=jaw_pose,
+                leye_pose=leye_pose,
+                reye_pose=reye_pose,
                 expression=expression,
-                transl=batch_trans,
+                transl=trans,  # Use 'trans' instead of 'batch_trans'
                 pose2rot=True,
-                device=device
             )
-            vertices_list.append(smpl_output.vertices)
+            vertices = smpl_output.vertices  # Shape: [batch_size, num_vertices, 3]
+
+
+
+            # Project to 2D
+            projected_vertices = self.project_to_2d(vertices, frame_camera_params)
+
+            # Rasterize
+            batch_expanded_codes = self.latent_codes.unsqueeze(0).expand(frame_smpl_params.shape[0], -1, -1)
+            print(f"batch_expanded_codes shape: {batch_expanded_codes.shape}")
+            print(f"batch_expanded_codes min: {batch_expanded_codes.min()}, max: {batch_expanded_codes.max()}")
+            feature_map = self.rasterizer(projected_vertices, self.faces_tensor, batch_expanded_codes)
+
+            # Ensure vertex colors match vertices
+            assert vertices.shape[1] == batch_expanded_codes.shape[1], "Mismatch in vertices and vertex colors"
+
+            # Reshape feature_map
+            feature_map = feature_map.view(frame_smpl_params.shape[0], self.feature_dim, 1, self.image_size, self.image_size)
+
+            # Encode feature_map
+            frame_motion_code = self.encoder(feature_map)
+
+            motion_code_list.append(frame_motion_code)
+
+        # Aggregate motion codes
+        motion_codes = torch.stack(motion_code_list, dim=2)  # Shape: [batch_size, code_dim, num_frames]
+
+        return motion_codes
+
         
-
-        vertices = torch.cat(vertices_list, dim=0)
-        faces = self.faces_tensor  # Already on the correct device
-
-        # Flatten camera_params to match the number of frames
-        camera_params = camera_params.view(-1, camera_params.shape[-1])  # Shape: [batch_size * num_frames, 12]
-
-        # Prepare expanded_codes
-        expanded_codes = self.latent_codes.unsqueeze(0).expand(vertices.shape[0], -1, -1)
-
-
-        # Process frames in batches
-        batch_size_raster = 1  # Adjust as needed
-        feature_maps_list = []
-        for i in range(0, num_frames, batch_size_raster):
-            batch_end = min(i + batch_size_raster, num_frames)
-            batch_vertices = vertices[i:batch_end]
-            
-            print(f"Processing batch {i} to {batch_end}")
-            print(f"camera_params shape: {camera_params.shape}")
-            print(f"camera_params first few values: {camera_params[:5, :5]}")
-            
-            # Correctly slice camera_params for the current batch
-            if camera_params.dim() == 2:
-                batch_camera_params = camera_params[i:batch_end, :]
-            elif camera_params.dim() == 3:
-                batch_camera_params = camera_params[0, i:batch_end, :]
-            elif camera_params.dim() == 4:
-                batch_camera_params = camera_params[0, i:batch_end, 0, :]
-            else:
-                raise ValueError(f"Unexpected camera_params shape: {camera_params.shape}")
-            
-            print(f"Batch camera params shape: {batch_camera_params.shape}")
-            print(f"Batch camera params first few values: {batch_camera_params[:5, :5]}")
-            
-            batch_projected_vertices = self.project_to_2d(batch_vertices, batch_camera_params)
-            batch_expanded_codes = expanded_codes[i:batch_end]
-
-            # Ensure tensors are contiguous
-            batch_projected_vertices = batch_projected_vertices.contiguous()
-            batch_expanded_codes = batch_expanded_codes.contiguous()
-
-            # Rasterize the batch
-            batch_feature_maps = self.rasterizer(batch_projected_vertices, self.faces_tensor, batch_expanded_codes)
-            feature_maps_list.append(batch_feature_maps)
-
-        # Concatenate the feature maps from all batches
-        feature_maps = torch.cat(feature_maps_list, dim=0)
-        
-        print(f"Concatenated feature maps shape: {feature_maps.shape}")
-
-        # Reshape feature_maps appropriately
-        feature_maps = feature_maps.view(num_frames, self.image_size, self.image_size, self.feature_dim)
-        feature_maps = feature_maps.permute(0, 3, 1, 2)  # [num_frames, feature_dim, image_size, image_size]
-        feature_maps = feature_maps.unsqueeze(0)  # Add batch dimension
-        
-        print(f"Reshaped feature maps shape: {feature_maps.shape}")
-
-        # Continue with the rest of your code
-        motion_code = self.encoder(feature_maps)
-
-        return motion_code
-
     def project_to_2d(self, vertices, camera_params):
         print(f"project_to_2d input shapes: vertices={vertices.shape}, camera_params={camera_params.shape}")
         
@@ -542,8 +554,10 @@ class DiffusionDecoder(nn.Module):
         return self.vae.decode(x).sample
     
 class MIMOModel(nn.Module):
-    def __init__(self, num_vertices, feature_dim, image_size):
+    def __init__(self,  feature_dim, image_size):
         super().__init__()
+        num_vertices = 10475  # Update to match SMPL-X vertices
+
         self.motion_encoder = StructuredMotionEncoder(num_vertices, feature_dim, image_size)
         
         clip_model, _ = clip.load("ViT-B/32", device="cpu")
