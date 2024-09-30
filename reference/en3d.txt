@@ -1,0 +1,925 @@
+En3D: An Enhanced Generative Model for Sculpting 3D Humans from 2D Synthetic Data
+Yifang Men1, Biwen Lei1, Yuan Yao1, Miaomiao Cui1, Zhouhui Lian2, Xuansong Xie1
+1Institute for Intelligent Computing, Alibaba Group
+2Wangxuan Institute of Computer Technology, Peking University
+https://menyifang.github.io/projects/En3D/index.html
+Abstract
+We present En3D, an enhanced generative scheme for sculpting high-quality 3D human avatars. Unlike previous works that rely on scarce 3D datasets or limited 2D collections with imbalanced viewing angles and imprecise pose priors, our approach aims to develop a zero-shot 3D generative scheme capable of producing visually realistic, geometrically accurate and content-wise diverse 3D humans without relying on pre-existing 3D or 2D assets. To address this challenge, we introduce a meticulously crafted workflow that implements accurate physical modeling to learn the enhanced 3D generative model from synthetic 2D data. During inference, we integrate optimization modules to bridge the gap between realistic appearances and coarse 3D shapes. Specifically, En3D comprises three modules: a 3D generator that accurately models generalizable 3D humans with realistic appearance from synthesized balanced, diverse, and structured human images; a geometry sculptor that enhances shape quality using multi-view normal constraints for intricate human anatomy; and a texturing module that disentangles explicit texture maps with fidelity and editability, leveraging semantical UV partitioning and a differentiable rasterizer. Experimental results show that our approach significantly outperforms prior works in terms of image quality, geometry accuracy and content diversity. We also showcase the applicability of our generated avatars for animation and editing, as well as the scalability of our approach for content-style free adaptation.
+
+[Uncaptioned image]
+Figure 1:Given random noises or guided texts, our generative scheme can synthesize high-fidelity 3D human avatars that are visually realistic and geometrically accurate. These avatars can be seamlessly animated and easily edited. Our model is trained on 2D synthetic data without relying on any pre-existing 3D or 2D collections.
+1Introduction
+3D human avatars play an important role in various applications of AR/VR such as video games, telepresence and virtual try-on. Realistic human modeling is an essential task, and many valuable efforts have been made by leveraging neural implicit fields to learn high-quality articulated avatars  [45, 9, 11, 52]. However, these methods are directly learned from monocular videos or image sequences, where subjects are single individuals wearing specific garments, thus limiting their scalability.
+
+Generative models learn a shared 3D representation to synthesize clothed humans with varying identities, clothing and poses. Traditional methods are typically trained on 3D datasets, which are limited and expensive to acquire. This data scarcity limits the model’s generalization ability and may lead to overfitting on small datasets. Recently, 3D-aware image synthesis methods [39, 6, 20] have demonstrated great potential in learning 3D generative models of rigid objects from 2D image collections. Follow-up works show the feasibility of learning articulated humans from image collections driven by SMPL-based deformations, but only in limited quality and resolution. EVA3D [18] represents humans as a composition of multiple parts with NeRF representations. AG3D [10] incorporates an efficient articulation module to capture both body shape and cloth deformation. Nevertheless, there remains a noticeable gap between generated and real humans in terms of appearance and geometry. Moreover, their results are limited to specific views (i.e., frontal angles) and lack diversity (i.e., fashion images in similar skin tone, body shape, and age).
+
+The aim of this paper is to propose a zero-shot 3D generative scheme that does not rely on any pre-existing 3D or 2D datasets, yet is capable of producing high-quality 3D humans that are visually realistic, geometrically accurate, and content-wise diverse. The generated avatars can be seamlessly animated and easily edited. An illustration is provided in Figure 1. To address this challenging task, our proposed method inherits from 3D-aware human image synthesis and exhibits substantial distinctions based on several key insights. Rethinking the nature of 3D-aware generative methods from 2D collections [6, 18, 10], they actually try to learn a generalizable and deformable 3D representation, whose 2D projections can meet the distribution of human images in corresponding views. Thereby, it is crucial for accurate physical modeling between 3D objects and 2D projections. However, previous works typically leverage pre-existing 2D human images to estimate physical parameters (i.e., camera and body poses), which are inaccurate because of imprecise SMPL priors for highly-articulated humans. This inaccuracy limits the synthesis ability for realistic multi-view renderings. Second, these methods solely rely on discriminating 2D renderings, which is ambiguous and loose to capture inherent 3D shapes in detail, especially for intricate human anatomy.
+
+To address these limitations, we propose a novel generative scheme with two core designs. Firstly, we introduce a meticulously-crafted workflow that implements accurate physical modeling to learn an enhanced 3D generative model from synthetic data. This is achieved by instantiating a 3D body scene and projecting the underlying 3D skeleton into 2D pose images using explicit camera parameters. These 2D pose images act as conditions to control a 2D diffusion model, synthesizing realistic human images from specific viewpoints. By leveraging synthetic view-balanced, diverse and structured human images, along with known physical parameters, we employ a 3D generator equipped with an enhanced renderer and discriminator to learn realistic appearance modeling. Secondly, we improve the 3D shape quality by leveraging the gap between high-quality multi-view renderings and the coarse mesh produced by the 3D generative module. Specifically, we integrate an optimization module that utilizes multi-view normal constraints to rapidly refine geometry details under supervision. Additionally, we incorporate an explicit texturing module to ensure faithful UV texture maps. In contrast to previous works that rely on inaccurate physical settings and inadequate shape supervision, we rebuild the generative scheme from the ground up, resulting in comprehensive improvements in image quality, geometry accuracy, and content diversity. In summary, our contributions are threefold:
+
+• We present a zero-shot generative scheme that efficiently synthesizes high-quality 3D human avatars with visual realism, geometric accuracy and content diversity. These avatars can be seamlessly animated and easily edited, offering greater flexibility in their applications.
+• We develop a meticulously-crafted workflow to learn an enhanced generative model from synthesized human images that are balanced, diverse, and also possess known physical parameters. This leads to diverse 3D-aware human image synthesis with realistic appearance.
+• We propose the integration of optimization modules into the 3D generator, leveraging multi-view guidance to enhance both shape quality and texture fidelity, thus achieving realistic 3D human assets.
+Refer to caption
+Figure 2:An overview of the proposed scheme, which consists of three modules: 3D generative modeling (3DGM), the geometric sculpting (GS) and the explicit texturing (ET). 3DGM using synthesized diverse, balanced and structured human image with accurate camera 
+φ
+ to learn generalizable 3D humans with the triplane-based architecture. GS is integrated as an optimization module by utilizing multi-view normal constraints to refine and carve geometry details. ET utilizes UV partitioning and a differentiable rasterizer to disentangles explicit UV texture maps. Not only multi-view renderings but also realistic 3D models can be acquired for final results.
+2Related work
+3D Human Modeling. Parametric models [4, 30, 21, 22, 40] serve as a common representation for 3D human modeling, they allows for robust control by deforming a template mesh with a series of low-dimensional parameters, but can only generate naked 3D humans. Similar ideas have been extended to model clothed humans [2, 32], but geometric expressivity is restricted due to the fixed mesh topology. Subsequent works [41, 7, 41] further introduce implicit surfaces to produce complex non-linear deformations of 3D bodies. Unfortunately, the aforementioned approaches all require 3D scans of various human poses for model fitting, which are difficult to acquire. With the explosion of NeRF, valuable efforts have been made towards combining NeRF models with explicit human models [45, 29, 9, 11, 52]. Neural body [45] anchors a set of latent codes to the vertices of the SMPL model [30] and transforms the spatial locations of the codes to the volume in the observation space. HumanNeRF [52] optimizes for a canonical, volumetric T-pose of the human with a motion field to map the non-rigid transformations. Nevertheless, these methods are learned directly from monocular videos or image sequences, where subjects are single individuals wearing specific garments, thus limiting their scalability.
+
+Generative 3D-aware Image Synthesis. Recently, 3D-aware image synthesis methods have lifted image generation with explicit view control by integrating the 2D generative models  [23, 24, 25] with 3D representations, such as voxels [53, 16, 35, 36], meshes [50, 28] and points clouds [27, 1]. GRAF [49] and 
+π
+-GAN[5] firstly integrate the implicit representation networks, i.e., NeRF [34], with differentiable volumetric rendering for 3D scene generation. However, they have difficulties in training on high-resolution images due to the costly rendering process. Subsequent works have sought to improve the efficiency and quality of such NeRF-based GANs, either by adopting a two-stage rendering process [14, 37, 39, 6, 55] or a smart sampling strategy [8, 60]. StyleSDF [39] combines a SDF-based volume renderer and a 2D StyleGAN network [24] for photorealistic image generation. EG3D [6] introduces a superior triplane representation to leverage 2D CNN-based feature generators for efficient generalization over 3D spaces. Although these methods demonstrate impressive quality in view-consistent image synthesis, they are limited to simplified rigid objects such as faces, cats and cars.
+
+To learn highly articulated humans from unstructured 2D images, recent works [58, 18, 12, 19, 10, 56] integrate the deformation field to learn non-rigid deformations based on the body prior of estimated SMPL parameters. EVA3D [18] represents humans as a composition of multiple parts with NeRF representations. Instead of directly rendering the image from a 3D representation, 3DHumanGAN [56] uses an equivariant 2D generator modulated by 3D human body prior, which enables to establish one-to-many mapping from 3D geometry to synthesized textures from 2D images. AG3D [10] combines the 3D generator with an efficient articulation module to warp from canonical space into posed space via a learned continuous deformation field. However, a gap still exists between the generated and real humans in terms of appearance, due to the imprecise priors from complex poses as well as the data biases from limited human poses and imbalanced viewing angles in the dataset.
+
+3Method Description
+Our goal is to develop a zero-shot 3D generative scheme that does not rely on any pre-existing 3D or 2D collections, yet is capable of producing high-quality 3D humans that are visually realistic, geometrically accurate and content-wise diverse to generalize to arbitrary humans.
+
+An overview of the proposed scheme is illustrated in Figure 2. We build a sequential pipeline with the following three modules: the 3D generative modeling (3DGM), the geometric sculpting (GS) and the explicit texturing (ET). The first module synthesizes view-balanced, structured and diverse human images with known camera parameters. Subsequently, it learns a 3D generative model from these synthetic data, focusing on realistic appearance modeling (Section 3.1). To overcome the inaccuracy of the 3D shape, the GS module is incorporated during the inference process. It optimizes a hybrid representation with multi-view normal constraints to carve intricate mesh details (Section 3.2). Additionally, the ET module is employed to disentangle explicit texture by utilizing semantical UV partitioning and a differentiable rasterizer (Section 3.3). By combining these modules, we are able to synthesize high-quality and faithful 3D human avatars by incorporating random noises or guided texts/images (Section 3.4).
+
+3.13D generative modeling
+Without any 3D or 2D collections, we develop a synthesis-based flow to learn a 3D generative module from 2D synthetic data. We start by instantiating a 3D scene through the projection of underlying 3D skeletons onto 2D pose images, utilizing accurate physical parameters (i.e., camera parameters). Subsequently, the projected 2D pose images serve as conditions to control the 2D diffusion model [59] for synthesizing view-balanced, diverse, and lifelike human images. Finally, we employ a triplane-based generator with enhanced designs to learn a generalizable 3D representation from the synthetic data. Details are described as follows.
+
+3D instantiation. Starting with a template body mesh (e.g., SMPL-X [44]) positioned and posed in canonical space, we estimate the 3D joint locations 
+𝒫
+3
+​
+d
+ by regressing them from interpolated vertices. We then project 
+𝒫
+3
+​
+d
+ onto 2D poses 
+𝒫
+i
+,
+i
+=
+1
+,
+…
+,
+k
+ from 
+𝒦
+ horizontally uniformly sampled viewpoints 
+φ
+. In this way, paired 2D pose images and their corresponding camera parameters 
+{
+𝒫
+i
+,
+φ
+i
+}
+ are formulated.
+
+Controlled 2D image synthesis. With the pose image 
+𝒫
+i
+, we feed it into off-the-shelf ControlNet [59] as the pose condition to guide diffusion models  [47] to synthesize human images in desired poses (i.e., views). The text prompt 
+T
+ is also used for diverse contents. Given a prompt 
+T
+, instead of generating a human image 
+ℐ
+s
+:
+ℐ
+s
+=
+𝒞
+​
+(
+𝒫
+i
+,
+T
+)
+ independently for each view 
+φ
+i
+, we horizontally concatenate 
+𝒦
+ pose images 
+𝒫
+i
+∈
+R
+H
+×
+W
+×
+3
+, resulting in 
+𝒫
+i
+′
+∈
+R
+H
+×
+K
+​
+W
+×
+3
+ and feed 
+𝒫
+i
+​
+’
+ to 
+𝒞
+, along with a prompt hint of ‘multi-view’ in 
+T
+. In this way, multi-view human images 
+ℐ
+s
+′
+ are synthesized with roughly coherent appearance. We split 
+ℐ
+s
+′
+ to single view images 
+ℐ
+φ
+ under specific views 
+φ
+. This concatenation strategy facilitates the convergence of distributions in synthetic multi-views, thus easing the learning of common 3D representation meeting multi-view characteristics.
+
+Generalizable 3D representation learning. With synthetic data of paired 
+{
+ℐ
+φ
+,
+φ
+}
+, we learn the 3D generative module 
+𝒢
+3
+​
+d
+ from them to produce diverse 3D-aware human images with realistic appearance. Inspired by EG3D [6], we employ a triplane-based generator to produce a generalizable representation 
+𝒯
+ and introduce a patch-composed neural renderer to learn intricate human representation efficiently. Specifically, instead of uniformly sampling 2D pixels on the image 
+ℐ
+, we decompose patches in the ROI region including human bodies, and only emit rays towards pixels in these patches. The rays are rendered into RGB color with opacity values via volume rendering. Based on the decomposed rule, we decode rendered colors to multiple patches and re-combine these patches for full feature images. In this way, the representation is composed of effective human body parts, which directs the attention of the networks towards the human subject itself. This design facilitates fine-grained local human learning while maintaining computational efficiency.
+
+For the training process, we employ two discriminators, one for RGB images and another for silhouettes, which yields better disentanglement of foreground objects with global geometry. The training loss for this module 
+L
+3
+​
+d
+ consists of the two adversarial terms:
+
+ℒ
+3
+​
+d
+=
+ℒ
+a
+​
+d
+​
+v
+​
+(
+𝒟
+r
+​
+g
+​
+b
+,
+𝒢
+3
+​
+d
+)
++
+λ
+s
+​
+ℒ
+a
+​
+d
+​
+v
+​
+(
+𝒟
+m
+​
+a
+​
+s
+​
+k
+,
+𝒢
+3
+​
+d
+)
+,
+(1)
+where 
+λ
+s
+ denotes the weight of silhouette item. 
+ℒ
+a
+​
+d
+​
+v
+ is computed by the non-saturating GAN loss with R1 regularization [33].
+
+With the trained 
+𝒢
+3
+​
+d
+, we can synthesize 3D-aware human images 
+ℐ
+g
+φ
+ with view control, and extract coarse 3D shapes 
+ℳ
+c
+ from the density field of neural renderer using the Marching Cubes algorithm [31].
+
+3.2Geometric sculpting
+Our 3D generative module can produce high-quality and 3D-consistent human images in view controls. However, its training solely relies on discriminations made using 2D renderings, which can result in inaccuracies in capturing the inherent geometry, especially for complex human bodies. Therefore, we integrate the geometric sculpting, an optimization module leveraging geometric information from high-quality multi-views to carve surface details. Combined with a hybrid 3D representation and a differentiable rasterizer, it can rapidly enhance the shape quality within seconds.
+
+DMTET adaption. Owing to the expressive ability of arbitrary topologies and computational efficiency with direct shape optimization, we employ DMTET as our 3D representation in this module and adapt it to the coarse mesh 
+ℳ
+c
+ via an initial fitting procedure. Specifically, we parameterize DMTET as an MLP network 
+Ψ
+g
+ that learns to predict the SDF value 
+s
+​
+(
+v
+i
+)
+ and the position offset 
+δ
+​
+v
+i
+ for each vertex 
+v
+i
+∈
+V
+​
+T
+ of the tetrahedral grid 
+(
+V
+​
+T
+,
+T
+)
+. A point set 
+P
+=
+{
+p
+i
+∈
+R
+3
+}
+ is randomly sampled near 
+ℳ
+c
+ and their SDF values 
+S
+​
+D
+​
+F
+​
+(
+p
+i
+)
+ can be pre-computed. We adapt the parameters 
+ψ
+ of 
+Ψ
+g
+ by fitting it to the SDF of 
+ℳ
+c
+:
+
+ℒ
+a
+​
+d
+​
+a
+=
+∑
+p
+i
+∈
+P
+‖
+s
+​
+(
+p
+i
+;
+ψ
+)
+−
+S
+​
+D
+​
+F
+​
+(
+p
+i
+)
+‖
+2
+.
+(2)
+Geometry refinement. Using the adapted DMTET, we leverage the highly-detailed normal maps 
+𝒩
+ derived from realistic multi-view images as a guidance to refine local surfaces. To obtain the pseudo-GT normals 
+𝒩
+φ
+, we extract them from 
+ℐ
+g
+φ
+ using a pre-trained normal estimator [54]. For the rendered normals 
+𝒩
+^
+φ
+, we extract the triangular mesh 
+ℳ
+t
+​
+r
+​
+i
+ from 
+(
+V
+​
+T
+,
+T
+)
+ using the Marching Tetrahedra (MT) layer in our current DMTET. By rendering the generated mesh 
+ℳ
+t
+​
+r
+​
+i
+ with differentiable rasterization, we obtain the resulting normal map 
+𝒩
+^
+φ
+. To ensure holistic surface polishing that takes into account multi-view normals, we randomly sample camera poses 
+φ
+ that are uniformly distributed in space. We optimize the parameters of 
+Ψ
+g
+ using the normal loss, which is defined as:
+
+ℒ
+n
+​
+o
+​
+r
+​
+m
+=
+‖
+𝒩
+^
+φ
+−
+𝒩
+φ
+‖
+2
+.
+(3)
+After rapid optimization, the final triangular mesh 
+ℳ
+t
+​
+r
+​
+i
+ can be easily extracted from the MT layer. If the hands exhibit noise, they can be optionally replaced with cleaner geometry hands from SMPL-X, benefiting from the alignment of the generated body in canonical space with the underlying template body.
+
+3.3Explicit texturing
+With the final mesh, the explicit texturing module aims to disentangle a UV texture map from multi-view renderings 
+ℐ
+g
+φ
+. This intuitive module not only facilitates the incorporation of high-fidelity textures but also enables various editing applications, as verified in Section 4.4.
+
+Given the polished triangular mesh 
+ℳ
+t
+​
+r
+​
+i
+ and multi-views 
+ℐ
+g
+φ
+, we model the explicit texture map 
+T
+u
+​
+v
+ of 
+ℳ
+t
+​
+r
+​
+i
+ with a semantic UV partition and optimize 
+T
+u
+​
+v
+ using a differentiable rasterizer 
+ℛ
+ [26]. Specifically, leveraging the canonical properties of synthesized bodies, we semantically split 
+ℳ
+t
+​
+r
+​
+i
+ into 
+γ
+ components and rotate each component vertically, thus enabling effective UV projection for each component with cylinder unwarping. We then combine the texture partitions together for the full texture 
+T
+u
+​
+v
+. We optimize 
+T
+u
+​
+v
+ from a randomly initialized scratch using the texture loss, which consists of a multi-view reconstruction term and a total-variation (tv) term:
+
+ℒ
+t
+​
+e
+​
+x
+=
+ℒ
+r
+​
+e
+​
+c
++
+λ
+t
+​
+v
+​
+ℒ
+t
+​
+v
+,
+(4)
+where 
+λ
+t
+​
+v
+ denotes the weight of the tv loss.
+
+Multi-view guidance. To ensure comprehensive texturing in the 3D space, we render the color images 
+ℛ
+​
+(
+ℳ
+t
+​
+r
+​
+i
+,
+φ
+)
+ and silhouettes 
+𝒮
+ using 
+ℛ
+ and optimize 
+T
+u
+​
+v
+ utilizing multi-view weighted guidance. Their pixel-alignment distances to the original multi-view renderings 
+ℐ
+g
+φ
+ are defined as the reconstruction loss:
+
+ℒ
+r
+​
+e
+​
+c
+=
+∑
+φ
+∈
+Ω
+w
+φ
+​
+‖
+ℛ
+​
+(
+ℳ
+t
+​
+r
+​
+i
+,
+φ
+)
+⋅
+𝒮
+−
+I
+g
+φ
+⋅
+𝒮
+‖
+2
+,
+(5)
+where 
+Ω
+ is the set of viewpoints 
+{
+φ
+i
+,
+i
+=
+1
+,
+…
+,
+k
+}
+ and 
+w
+φ
+ denotes weights of different views. 
+w
+φ
+ equals to 
+1.0
+ for 
+φ
+∈
+{
+f
+​
+r
+​
+o
+​
+n
+​
+t
+,
+b
+​
+a
+​
+c
+​
+k
+}
+ and 
+0.2
+ otherwise.
+
+Smooth constraint. To avoid abrupt variations and smooth the generated texture 
+T
+u
+​
+v
+, we utilize the total-variation loss 
+ℒ
+t
+​
+v
+ which is computed by:
+
+ℒ
+t
+​
+v
+=
+1
+h
+×
+w
+×
+c
+​
+‖
+∇
+x
+(
+T
+u
+​
+v
+)
++
+∇
+y
+(
+T
+u
+​
+v
+)
+‖
+,
+(6)
+where 
+x
+ and 
+y
+ denote horizontal and vertical directions.
+
+Refer to caption
+Figure 3:The visualized flowchart of our method that synthesize textured 3D human avatars from input noises, texts or images.
+3.4Inference
+Built upon the above modules, we can generate high-quality 3D human avatars from either random noises or guided inputs such as texts or images. The flowchart for this process is shown in Figure 3. For input noises, we can easily obtain the final results by sequentially using the 3DGM, GS and ET modules. For text-guided synthesis, we first convert the text into a structured image using our controlled diffusion 
+𝒞
+, and then inverse it to the latent space using PTI [46]. Specially, the GS and ET modules provide an interface that accurately reflects viewed modifications in the final 3D objects. As a result, we utilize the guided image to replace the corresponding view image, which results in improved fidelity in terms of geometry and texture. The same process is applied for input images as guided images.
+
+4Experimental Results
+Refer to caption
+Figure 4:Results of synthesized 3D human avatars at 
+512
+2
+.
+Implementation details. Our process begins by training the 3D generative module (3DGM) on synthetic data. During inference, we integrate the geometric sculpting (GS) and explicit texturing (ET) as optimization modules. For 3DGM, we normalize the template body to the 
+(
+0
+,
+1
+)
+ space and place its center at the origin of the world coordinate system. We sample 
+7
+​
+(
+𝒦
+=
+7
+)
+ viewpoints uniformly from the horizontal plane, ranging from 
+0
+∘
+ to 
+180
+∘
+ (front to back), with a camera radius of 
+2.7
+. For each viewpoint, we generate 
+100
+​
+K
+ images using the corresponding pose image. To ensure diverse synthesis, we use detailed descriptions of age, gender, ethnicity, hairstyle, facial features, and clothing, leveraging a vast word bank. To cover 
+360
+∘
+ views, we horizontally flip the synthesized images and obtain 1.4 million human images at a resolution of 
+512
+2
+ in total. We train the 3DGM for about 2.5M iterations with a batch size of 
+32
+, using two discriminators with a learning rate of 
+0.002
+ and a generator learning rate of 0.0025. The training takes 8 days on 8 NVIDIA Tesla-V100. For GS, we optimize 
+ψ
+ for 400 iterations for DMTET adaption and 100 iterations for surface carving (taking about 15s in total on 1 NVIDIA RTX 3090 GPU). For ET, we set 
+λ
+u
+​
+v
+=
+1
+ and optimize 
+T
+u
+​
+v
+ for 500 iterations (around 10 seconds). We split 
+ℳ
+t
+​
+r
+​
+i
+ into 
+5
+​
+(
+γ
+=
+5
+)
+ body parts (i.e., trunk, left/right arm/leg) with cylinder UV unwarping. We use the Adam optimizer with learning rates of 0.01 and 0.001 for 
+Ψ
+g
+ and 
+T
+u
+​
+v
+, respectively. Detailed network architectures can be found in the supplemental materials (Suppl).
+
+4.13D human generation
+Figure 4 showcases several 3D human avatars synthesized by our pipeline, highlighting the image quality, geometry accuracy, and diverse outputs achieved through our method. Additionally, we explore the interpolation of the latent conditions to yield smooth transitions in appearance, leveraging the smooth latent space learned by our generative model. For more synthesized examples and interpolation results, please refer to the Suppl.
+
+Refer to caption
+Figure 5:Qualitative comparison with three state-of-the-art methods: EVA3D [18], AG3D [10] and EG3D [6].
+4.2Comparisons
+Qualitative comparison. In Figure 5, we compare our method with three baselines: EVA3D [18] and AG3D [10], which are state-of-the-art methods for generating 3D humans from 2D images, and EG3D [6], which serves as the foundational backbone of our method. The results of first two methods are produced by directly using source codes and trained models released by authors. We train EG3D using our synthetic images with estimated cameras from scratch. As we can see, EVA3D fails to produce 
+360
+∘
+ humans with reasonable back inferring. AG3D and EG3D are able to generate 
+360
+∘
+ renderings but both struggle with photorealism and capturing detailed shapes. Our method synthesizes not only higher-quality, view-consistent 
+360
+∘
+ images but also higher-fidelity 3D geometry with intricate details, such as irregular dresses and haircuts.
+
+Table 1:Quantitative evaluation using FID, IS-360, normal accuracy (Normal) and identity consistency (ID).
+Method	FID 
+↓
+IS-360 
+↑
+Normal 
+↓
+ID
+↑
+EVA3D [18] 	15.91	3.19	30.81	0.72
+AG3D [10] 	10.93	3.28	20.83	0.69
+EG3D [6] 	7.48	3.26	12.74	0.71
+Ours	2.73	3.43	5.62	0.74
+Quantitative comparison. Table 1 provides quantitative results comparing our method against the baselines. We measure image quality with Frechet Inception Distance (FID) [17] and Inception Score [48] for 
+360
+∘
+ views (IS-360). FID measures the visual similarity and distribution discrepancy between 50k generated images and all real images. IS-360 focuses on the self-realism of generated images in 
+360
+∘
+ views. For shape evaluation, we compute FID between rendered normals and pseudo-GT normal maps (Normal), following AG3D. The FID and Normal scores of EVA3D and AG3D are directly fetched from their reports. Additionally, we access the multi-view facial identity consistency using the ID metric introduced by EG3D. Our method demonstrates significant improvements in FID and Normal, bringing the generative human model to a new level of realistic 
+360
+∘
+ renderings with delicate geometry while also maintaining state-of-the-art view consistency.
+
+4.3Ablation study
+Synthesis flow and patch-composed rendering. We assess the impact of our carefully designed synthesis flow by training a model with synthetic images but with camera and pose parameters estimated by SMPLify-X [44] (w/o SYN-P). As Table 2 shows, the model w/o SYN-P results in worse FID and IS-360 scores, indicating that the synthesis flow contributes to more accurate physical parameters for realistic appearance modeling. By utilizing patch-composed rendering (PCR), the networks focus more on the human region, leading to more realistic results.
+
+Table 2: Results of models trained by replacing physical parameters with estimated ones (w/o SYN-P) or removing patch-composed rendering (w/o PCR).
+Ours	Ours-w/o SYN-P	Ours-w/o PCR
+FID 
+↓
+ 	2.73	4.28	3.26
+IS-360 
+↑
+ 	3.43	3.31	3.35
+Refer to caption
+Figure 6:Effects of the GS module to carve fine-grained surfaces.
+Geometry sculpting module (GS). We demonstrate the importance of this module by visualizing the meshes before and after its implementation. Figure 6 (b) shows that the preceding module yields a coarse mesh due to the complex human anatomy and the challenges posed by decomposing ambiguous 3D shapes from 2D images. The GS module utilizes high-quality multi-view outputs and employs a more flexible hybrid representation to create expressive humans with arbitrary topologies. It learns from pixel-level surface supervision, leading to a significant improvement in shape quality, characterized by smooth surfaces and intricate outfits (Figure 6 (c)).
+
+Refer to caption
+Figure 7:Effects of the ET module for guided synthesis.
+Explicit texturing module (ET). This intuitive module not only extracts the explicit UV texture for complete 3D assets but also enables high-fidelity results for image guided synthesis. Following the flowchart in Figure 3, we compare the results produced with and without this module. Our method without ET directly generates implicit renderings through PTI inversion, as shown in Figure 7 (b). While it successfully preserves global identity, it struggles to synthesize highly faithful local textures (e.g., floral patterns). The ET module offers a convenient and efficient way to directly interact with the 3D representation, enabling the production of high-fidelity 3D humans with more consistent content including exquisite local patterns (Figure 7 (a, c)).
+
+4.4Applications
+Avatar animation. All avatars produced by our method are in a canonical body pose and aligned to an underlying 3D skeleton extracted from SMPL-X. This alignment allows for easy animation and the generation of motion videos, as demonstrated in Figure 1 and Suppl.
+
+Texture doodle and local editing. Our approach benefits from explicitly disentangled geometry and texture, enabling flexible editing capabilities. Following the flowchart of text or image guided synthesis (Section 3.4), users can paint any pattern or add text to a guided image. These modifications can be transferred to 3D human models by inputting modified views into the texture module (e.g., painting the text ’hey’ on a jacket as shown in Figure 1 (d)). Our approach also allows for clothing editing by simultaneously injecting edited guide images with desired clothing into the GS and ET modules (e.g., changing a jacket and jeans to bodysuits in Figure 1 (e)). More results can be found in Suppl.
+
+Content-style free adaption. Our proposed scheme is versatile and can be extended to generate various types of contents (e.g., portrait heads ) and styles (e.g., Disney cartoon characters). To achieve this, we fine-tune our model using synthetic images from these domains, allowing for flexible adaptation. We showcase the results in Figure 8. More results and other discussions (e.g., limitations, negative impact, etc.) can be found in Suppl.
+
+Refer to caption
+Figure 8:Results synthesized by adapting our method to various styles (e.g., Disney cartoon characters) or contents (e.g., portrait heads).
+5Conclusions
+We introduced En3D, a novel generative scheme for sculpting 3D humans from 2D synthetic data. This method overcomes limitations in existing 3D or 2D collections and significantly enhances the image quality, geometry accuracy, and content diversity of generative 3D humans. En3D comprises a 3D generative module that learns generalizable 3D humans from synthetic 2D data with accurate physical modeling, and two optimization modules to carve intricate shape details and disentangle explicit UV textures with high fidelity, respectively. Experimental results validated the superiority and effectiveness of our method. We also demonstated the flexibility of our generated avatars for animation and editing, as well as the scalability of our approach for synthesizing portraits and Disney characters. We believe that our solution could provide invaluable human assets for the 3D vision community. Furthermore, it holds potential for use in common 3D object synthesis tasks.
+
+Acknowledgements
+We would like to thank Mengyang Feng and Jinlin Liu for their technical support on guided 2D image synthesis.
+
+References
+Achlioptas et al. [2018]Panos Achlioptas, Olga Diamanti, Ioannis Mitliagkas, and Leonidas Guibas.Learning representations and generative models for 3d point clouds.In International conference on machine learning, pages 40–49. PMLR, 2018.
+Alldieck et al. [2018]Thiemo Alldieck, Marcus Magnor, Weipeng Xu, Christian Theobalt, and Gerard Pons-Moll.Video based reconstruction of 3d people models.In Proceedings of the IEEE Conference on Computer Vision and Pattern Recognition, pages 8387–8397, 2018.
+An et al. [2023]Sizhe An, Hongyi Xu, Yichun Shi, Guoxian Song, Umit Y. Ogras, and Linjie Luo.Panohead: Geometry-aware 3d full-head synthesis in 360deg.In Proceedings of the IEEE/CVF Conference on Computer Vision and Pattern Recognition (CVPR), pages 20950–20959, 2023.
+Anguelov et al. [2005]Dragomir Anguelov, Praveen Srinivasan, Daphne Koller, Sebastian Thrun, Jim Rodgers, and James Davis.Scape: shape completion and animation of people.In ACM SIGGRAPH 2005 Papers, pages 408–416. 2005.
+Chan et al. [2021]Eric R Chan, Marco Monteiro, Petr Kellnhofer, Jiajun Wu, and Gordon Wetzstein.pi-gan: Periodic implicit generative adversarial networks for 3d-aware image synthesis.In Proceedings of the IEEE/CVF conference on computer vision and pattern recognition, pages 5799–5809, 2021.
+Chan et al. [2022]Eric R Chan, Connor Z Lin, Matthew A Chan, Koki Nagano, Boxiao Pan, Shalini De Mello, Orazio Gallo, Leonidas J Guibas, Jonathan Tremblay, Sameh Khamis, et al.Efficient geometry-aware 3d generative adversarial networks.In Proceedings of the IEEE/CVF Conference on Computer Vision and Pattern Recognition, pages 16123–16133, 2022.
+Chen et al. [2022]Xu Chen, Tianjian Jiang, Jie Song, Jinlong Yang, Michael J Black, Andreas Geiger, and Otmar Hilliges.gdna: Towards generative detailed neural avatars.In Proceedings of the IEEE/CVF Conference on Computer Vision and Pattern Recognition, pages 20427–20437, 2022.
+Deng et al. [2022]Yu Deng, Jiaolong Yang, Jianfeng Xiang, and Xin Tong.Gram: Generative radiance manifolds for 3d-aware image generation.In Proceedings of the IEEE/CVF Conference on Computer Vision and Pattern Recognition, pages 10673–10683, 2022.
+Dong et al. [2022]Zijian Dong, Chen Guo, Jie Song, Xu Chen, Andreas Geiger, and Otmar Hilliges.Pina: Learning a personalized implicit neural avatar from a single rgb-d video sequence.In Proceedings of the IEEE/CVF Conference on Computer Vision and Pattern Recognition, pages 20470–20480, 2022.
+Dong et al. [2023]Zijian Dong, Xu Chen, Jinlong Yang, Michael J Black, Otmar Hilliges, and Andreas Geiger.Ag3d: Learning to generate 3d avatars from 2d image collections.arXiv preprint arXiv:2305.02312, 2023.
+Feng et al. [2022]Yao Feng, Jinlong Yang, Marc Pollefeys, Michael J Black, and Timo Bolkart.Capturing and animation of body and clothing from monocular video.In SIGGRAPH Asia 2022 Conference Papers, pages 1–9, 2022.
+Fu et al. [2022]Jianglin Fu, Shikai Li, Yuming Jiang, Kwan-Yee Lin, Chen Qian, Chen Change Loy, Wayne Wu, and Ziwei Liu.Stylegan-human: A data-centric odyssey of human generation.In European Conference on Computer Vision, pages 1–19. Springer, 2022.
+Goodfellow et al. [2014]Ian Goodfellow, Jean Pouget-Abadie, Mehdi Mirza, Bing Xu, David Warde-Farley, Sherjil Ozair, Aaron Courville, and Yoshua Bengio.Generative adversarial nets.Advances in neural information processing systems, 27, 2014.
+Gu et al. [2021]Jiatao Gu, Lingjie Liu, Peng Wang, and Christian Theobalt.Stylenerf: A style-based 3d-aware generator for high-resolution image synthesis.arXiv preprint arXiv:2110.08985, 2021.
+He et al. [2023]Honglin He, Zhuoqian Yang, Shikai Li, Bo Dai, and Wayne Wu.Orthoplanes: A novel representation for better 3d-awareness of gans.In Proceedings of the IEEE/CVF International Conference on Computer Vision, pages 22996–23007, 2023.
+Henzler et al. [2019]Philipp Henzler, Niloy J Mitra, and Tobias Ritschel.Escaping plato’s cave: 3d shape from adversarial rendering.In Proceedings of the IEEE/CVF International Conference on Computer Vision, pages 9984–9993, 2019.
+Heusel et al. [2017]Martin Heusel, Hubert Ramsauer, Thomas Unterthiner, Bernhard Nessler, and Sepp Hochreiter.Gans trained by a two time-scale update rule converge to a local nash equilibrium.Advances in neural information processing systems, 30, 2017.
+Hong et al. [2022]Fangzhou Hong, Zhaoxi Chen, Yushi Lan, Liang Pan, and Ziwei Liu.Eva3d: Compositional 3d human generation from 2d image collections.arXiv preprint arXiv:2210.04888, 2022.
+Jiang et al. [2023]Suyi Jiang, Haoran Jiang, Ziyu Wang, Haimin Luo, Wenzheng Chen, and Lan Xu.Humangen: Generating human radiance fields with explicit priors.In Proceedings of the IEEE/CVF Conference on Computer Vision and Pattern Recognition, pages 12543–12554, 2023.
+Jo et al. [2023]Kyungmin Jo, Wonjoon Jin, Jaegul Choo, Hyunjoon Lee, and Sunghyun Cho.3d-aware generative model for improved side-view image synthesis.In Proceedings of the IEEE/CVF International Conference on Computer Vision, pages 22862–22872, 2023.
+Joo et al. [2018]Hanbyul Joo, Tomas Simon, and Yaser Sheikh.Total capture: A 3d deformation model for tracking faces, hands, and bodies.In Proceedings of the IEEE conference on computer vision and pattern recognition, pages 8320–8329, 2018.
+Kanazawa et al. [2018]Angjoo Kanazawa, Michael J Black, David W Jacobs, and Jitendra Malik.End-to-end recovery of human shape and pose.In Proceedings of the IEEE conference on computer vision and pattern recognition, pages 7122–7131, 2018.
+Karras et al. [2019]Tero Karras, Samuli Laine, and Timo Aila.A style-based generator architecture for generative adversarial networks.In Proceedings of the IEEE/CVF conference on computer vision and pattern recognition, pages 4401–4410, 2019.
+Karras et al. [2020]Tero Karras, Samuli Laine, Miika Aittala, Janne Hellsten, Jaakko Lehtinen, and Timo Aila.Analyzing and improving the image quality of stylegan.In Proceedings of the IEEE/CVF conference on computer vision and pattern recognition, pages 8110–8119, 2020.
+Karras et al. [2021]Tero Karras, Miika Aittala, Samuli Laine, Erik Härkönen, Janne Hellsten, Jaakko Lehtinen, and Timo Aila.Alias-free generative adversarial networks.Advances in Neural Information Processing Systems, 34:852–863, 2021.
+Laine et al. [2020]Samuli Laine, Janne Hellsten, Tero Karras, Yeongho Seol, Jaakko Lehtinen, and Timo Aila.Modular primitives for high-performance differentiable rendering.ACM Transactions on Graphics (TOG), 39(6):1–14, 2020.
+Li et al. [2019]Ruihui Li, Xianzhi Li, Chi-Wing Fu, Daniel Cohen-Or, and Pheng-Ann Heng.Pu-gan: a point cloud upsampling adversarial network.In Proceedings of the IEEE/CVF international conference on computer vision, pages 7203–7212, 2019.
+Liao et al. [2020]Yiyi Liao, Katja Schwarz, Lars Mescheder, and Andreas Geiger.Towards unsupervised learning of generative models for 3d controllable image synthesis.In Proceedings of the IEEE/CVF conference on computer vision and pattern recognition, pages 5871–5880, 2020.
+Liu et al. [2021]Lingjie Liu, Marc Habermann, Viktor Rudnev, Kripasindhu Sarkar, Jiatao Gu, and Christian Theobalt.Neural actor: Neural free-view synthesis of human actors with pose control.ACM transactions on graphics (TOG), 40(6):1–16, 2021.
+Loper et al. [2015]Matthew Loper, Naureen Mahmood, Javier Romero, Gerard Pons-Moll, and Michael J Black.Smpl: A skinned multi-person linear model.ACM Transactions on Graphics, 34(6), 2015.
+Lorensen and Cline [1998]William E Lorensen and Harvey E Cline.Marching cubes: A high resolution 3d surface construction algorithm.In Seminal graphics: pioneering efforts that shaped the field, pages 347–353. 1998.
+Ma et al. [2020]Qianli Ma, Jinlong Yang, Anurag Ranjan, Sergi Pujades, Gerard Pons-Moll, Siyu Tang, and Michael J Black.Learning to dress 3d people in generative clothing.In Proceedings of the IEEE/CVF Conference on Computer Vision and Pattern Recognition, pages 6469–6478, 2020.
+Mescheder et al. [2018]Lars Mescheder, Andreas Geiger, and Sebastian Nowozin.Which training methods for gans do actually converge?In International conference on machine learning, pages 3481–3490. PMLR, 2018.
+Mildenhall et al. [2021]Ben Mildenhall, Pratul P Srinivasan, Matthew Tancik, Jonathan T Barron, Ravi Ramamoorthi, and Ren Ng.Nerf: Representing scenes as neural radiance fields for view synthesis.Communications of the ACM, 65(1):99–106, 2021.
+Nguyen-Phuoc et al. [2019]Thu Nguyen-Phuoc, Chuan Li, Lucas Theis, Christian Richardt, and Yong-Liang Yang.Hologan: Unsupervised learning of 3d representations from natural images.In Proceedings of the IEEE/CVF International Conference on Computer Vision, pages 7588–7597, 2019.
+Nguyen-Phuoc et al. [2020]Thu H Nguyen-Phuoc, Christian Richardt, Long Mai, Yongliang Yang, and Niloy Mitra.Blockgan: Learning 3d object-aware scene representations from unlabelled images.Advances in neural information processing systems, 33:6767–6778, 2020.
+Niemeyer and Geiger [2021]Michael Niemeyer and Andreas Geiger.Giraffe: Representing scenes as compositional generative neural feature fields.In Proceedings of the IEEE/CVF Conference on Computer Vision and Pattern Recognition, pages 11453–11464, 2021.
+Niemeyer et al. [2020]Michael Niemeyer, Lars Mescheder, Michael Oechsle, and Andreas Geiger.Differentiable volumetric rendering: Learning implicit 3d representations without 3d supervision.In Proceedings of the IEEE/CVF Conference on Computer Vision and Pattern Recognition, pages 3504–3515, 2020.
+Or-El et al. [2022]Roy Or-El, Xuan Luo, Mengyi Shan, Eli Shechtman, Jeong Joon Park, and Ira Kemelmacher-Shlizerman.Stylesdf: High-resolution 3d-consistent image and geometry generation.In Proceedings of the IEEE/CVF Conference on Computer Vision and Pattern Recognition, pages 13503–13513, 2022.
+Osman et al. [2020]Ahmed AA Osman, Timo Bolkart, and Michael J Black.Star: Sparse trained articulated human body regressor.In Computer Vision–ECCV 2020: 16th European Conference, Glasgow, UK, August 23–28, 2020, Proceedings, Part VI 16, pages 598–613. Springer, 2020.
+Palafox et al. [2021]Pablo Palafox, Aljaž Božič, Justus Thies, Matthias Nießner, and Angela Dai.Npms: Neural parametric models for 3d deformable shapes.In Proceedings of the IEEE/CVF International Conference on Computer Vision, pages 12695–12705, 2021.
+Park et al. [2019a]Jeong Joon Park, Peter Florence, Julian Straub, Richard Newcombe, and Steven Lovegrove.Deepsdf: Learning continuous signed distance functions for shape representation.In Proceedings of the IEEE/CVF conference on computer vision and pattern recognition, pages 165–174, 2019a.
+Park et al. [2019b]Taesung Park, Ming-Yu Liu, Ting-Chun Wang, and Jun-Yan Zhu.Semantic image synthesis with spatially-adaptive normalization.In Proceedings of the IEEE/CVF conference on computer vision and pattern recognition, pages 2337–2346, 2019b.
+Pavlakos et al. [2019]Georgios Pavlakos, Vasileios Choutas, Nima Ghorbani, Timo Bolkart, Ahmed AA Osman, Dimitrios Tzionas, and Michael J Black.Expressive body capture: 3d hands, face, and body from a single image.In Proceedings of the IEEE/CVF conference on computer vision and pattern recognition, pages 10975–10985, 2019.
+Peng et al. [2021]Sida Peng, Yuanqing Zhang, Yinghao Xu, Qianqian Wang, Qing Shuai, Hujun Bao, and Xiaowei Zhou.Neural body: Implicit neural representations with structured latent codes for novel view synthesis of dynamic humans.In Proceedings of the IEEE/CVF Conference on Computer Vision and Pattern Recognition, pages 9054–9063, 2021.
+Roich et al. [2022]Daniel Roich, Ron Mokady, Amit H Bermano, and Daniel Cohen-Or.Pivotal tuning for latent-based editing of real images.ACM Transactions on graphics (TOG), 42(1):1–13, 2022.
+Rombach et al. [2022]Robin Rombach, Andreas Blattmann, Dominik Lorenz, Patrick Esser, and Björn Ommer.High-resolution image synthesis with latent diffusion models.In Proceedings of the IEEE/CVF conference on computer vision and pattern recognition, pages 10684–10695, 2022.
+Salimans et al. [2016]Tim Salimans, Ian Goodfellow, Wojciech Zaremba, Vicki Cheung, Alec Radford, and Xi Chen.Improved techniques for training gans.Advances in neural information processing systems, 29, 2016.
+Schwarz et al. [2020]Katja Schwarz, Yiyi Liao, Michael Niemeyer, and Andreas Geiger.Graf: Generative radiance fields for 3d-aware image synthesis.Advances in Neural Information Processing Systems, 33:20154–20166, 2020.
+Szabó et al. [2019]Attila Szabó, Givi Meishvili, and Paolo Favaro.Unsupervised generative 3d shape learning from natural images.arXiv preprint arXiv:1910.00287, 2019.
+Wang et al. [2021]Peng Wang, Lingjie Liu, Yuan Liu, Christian Theobalt, Taku Komura, and Wenping Wang.Neus: Learning neural implicit surfaces by volume rendering for multi-view reconstruction.arXiv preprint arXiv:2106.10689, 2021.
+Weng et al. [2022]Chung-Yi Weng, Brian Curless, Pratul P Srinivasan, Jonathan T Barron, and Ira Kemelmacher-Shlizerman.Humannerf: Free-viewpoint rendering of moving people from monocular video.In Proceedings of the IEEE/CVF conference on computer vision and pattern Recognition, pages 16210–16220, 2022.
+Wu et al. [2016]Jiajun Wu, Chengkai Zhang, Tianfan Xue, Bill Freeman, and Josh Tenenbaum.Learning a probabilistic latent space of object shapes via 3d generative-adversarial modeling.Advances in neural information processing systems, 29, 2016.
+Xiu et al. [2022]Yuliang Xiu, Jinlong Yang, Dimitrios Tzionas, and Michael J Black.Icon: Implicit clothed humans obtained from normals.In 2022 IEEE/CVF Conference on Computer Vision and Pattern Recognition (CVPR), pages 13286–13296. IEEE, 2022.
+Xue et al. [2022]Yang Xue, Yuheng Li, Krishna Kumar Singh, and Yong Jae Lee.Giraffe hd: A high-resolution 3d-aware generative model.In Proceedings of the IEEE/CVF Conference on Computer Vision and Pattern Recognition, pages 18440–18449, 2022.
+Yang et al. [2023]Zhuoqian Yang, Shikai Li, Wayne Wu, and Bo Dai.3dhumangan: 3d-aware human image generation with 3d pose mapping.In Proceedings of the IEEE/CVF International Conference on Computer Vision, pages 23008–23019, 2023.
+Yariv et al. [2021]Lior Yariv, Jiatao Gu, Yoni Kasten, and Yaron Lipman.Volume rendering of neural implicit surfaces.Advances in Neural Information Processing Systems, 34:4805–4815, 2021.
+Zhang et al. [2022]Jianfeng Zhang, Zihang Jiang, Dingdong Yang, Hongyi Xu, Yichun Shi, Guoxian Song, Zhongcong Xu, Xinchao Wang, and Jiashi Feng.Avatargen: a 3d generative model for animatable human avatars.In European Conference on Computer Vision, pages 668–685. Springer, 2022.
+Zhang et al. [2023]Lvmin Zhang, Anyi Rao, and Maneesh Agrawala.Adding conditional control to text-to-image diffusion models.In Proceedings of the IEEE/CVF International Conference on Computer Vision, pages 3836–3847, 2023.
+Zhou et al. [2021]Peng Zhou, Lingxi Xie, Bingbing Ni, and Qi Tian.Cips-3d: A 3d-aware generator of gans based on conditionally-independent pixel synthesis.arXiv preprint arXiv:2110.09788, 2021.
+Zhu et al. [2020]Peihao Zhu, Rameen Abdal, Yipeng Qin, and Peter Wonka.Sean: Image synthesis with semantic region-adaptive normalization.In Proceedings of the IEEE/CVF Conference on Computer Vision and Pattern Recognition, pages 5104–5113, 2020.
+◄ ar5iv homepage Feeling
+lucky? Conversion
+report Report
+an issue View original
+on arXiv►
+Copyright Privacy Policy Generated on Tue Feb 27 07:36:46 2024 by LaTeXMLMascot Sammy
