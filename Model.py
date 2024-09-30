@@ -426,7 +426,9 @@ class StructuredMotionEncoder(nn.Module):
                                      frame_betas[0:1], 
                                      global_orient[0:1], 
                                      body_pose[0:1], 
-                                     trans[0:1])
+                                     trans[0:1],
+                                     save_path=f'smplx_pose_frame_{frame_idx}.png')
+
 
             # SMPL model forward pass
             smpl_output = self.smplx(

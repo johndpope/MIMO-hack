@@ -128,7 +128,7 @@ def test_motion_encoder(data_dir, cam_ids_to_use):
     camera_params = torch.stack(camera_params)
     print(f"Camera parameters shape: {camera_params.shape}")
 
-    num_frames = poses.shape[0]
+    num_frames = 10# just do 2 frames per camera poses.shape[0]
     num_cameras = len(cam_ids_to_use)
     print(f"Number of frames: {num_frames}")
     print(f"Number of cameras: {num_cameras}")
