@@ -308,7 +308,7 @@ class StructuredMotionEncoder(nn.Module):
 
 
   # Process frames in batches
-        batch_size = 32
+        batch_size = 1
         vertices_list = []
         for i in range(0, num_frames, batch_size):
             batch_end = min(i + batch_size, num_frames)
@@ -361,7 +361,7 @@ class StructuredMotionEncoder(nn.Module):
 
 
         # Process frames in batches
-        batch_size_raster = 32  # Adjust as needed
+        batch_size_raster = 1  # Adjust as needed
         feature_maps_list = []
         for i in range(0, num_frames, batch_size_raster):
             batch_end = min(i + batch_size_raster, num_frames)
