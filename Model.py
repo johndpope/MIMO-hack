@@ -265,7 +265,7 @@ class StructuredMotionEncoder(nn.Module):
             nn.Linear(256, 512)
         )
 
-    
+        
     def forward(self, betas, smpl_params, camera_params):
         print(f"StructuredMotionEncoder input shapes: smpl_params={smpl_params.shape}, camera_params={camera_params.shape}")
         print(f"betas device: {betas.device}")
@@ -288,8 +288,7 @@ class StructuredMotionEncoder(nn.Module):
         # Split smpl_params into poses and translations
         poses = smpl_params[:, :165]       # Shape: [num_frames, 165]
         trans = smpl_params[:, 165:168]    # Shape: [num_frames, 3]
-
-
+        
         # Now, split poses into individual components
         global_orient = poses[:, :3]             # Indices 0:3
         body_pose = poses[:, 3:66]               # Indices 3:66 (63 parameters)
@@ -360,13 +359,31 @@ class StructuredMotionEncoder(nn.Module):
         # Prepare expanded_codes
         expanded_codes = self.latent_codes.unsqueeze(0).expand(vertices.shape[0], -1, -1)
 
-               # Process frames in batches
+
+        # Process frames in batches
         batch_size_raster = 32  # Adjust as needed
         feature_maps_list = []
         for i in range(0, num_frames, batch_size_raster):
             batch_end = min(i + batch_size_raster, num_frames)
             batch_vertices = vertices[i:batch_end]
-            batch_camera_params = camera_params[:, i:batch_end].squeeze(0)
+            
+            print(f"Processing batch {i} to {batch_end}")
+            print(f"camera_params shape: {camera_params.shape}")
+            print(f"camera_params first few values: {camera_params[:5, :5]}")
+            
+            # Correctly slice camera_params for the current batch
+            if camera_params.dim() == 2:
+                batch_camera_params = camera_params[i:batch_end, :]
+            elif camera_params.dim() == 3:
+                batch_camera_params = camera_params[0, i:batch_end, :]
+            elif camera_params.dim() == 4:
+                batch_camera_params = camera_params[0, i:batch_end, 0, :]
+            else:
+                raise ValueError(f"Unexpected camera_params shape: {camera_params.shape}")
+            
+            print(f"Batch camera params shape: {batch_camera_params.shape}")
+            print(f"Batch camera params first few values: {batch_camera_params[:5, :5]}")
+            
             batch_projected_vertices = self.project_to_2d(batch_vertices, batch_camera_params)
             batch_expanded_codes = expanded_codes[i:batch_end]
 
@@ -375,7 +392,7 @@ class StructuredMotionEncoder(nn.Module):
             batch_expanded_codes = batch_expanded_codes.contiguous()
 
             # Rasterize the batch
-            batch_feature_maps = self.rasterizer(batch_projected_vertices, faces, batch_expanded_codes)
+            batch_feature_maps = self.rasterizer(batch_projected_vertices, self.faces_tensor, batch_expanded_codes)
             feature_maps_list.append(batch_feature_maps)
 
         # Concatenate the feature maps from all batches
@@ -403,14 +420,6 @@ class StructuredMotionEncoder(nn.Module):
         # Check if camera_params is empty
         if camera_params.numel() == 0:
             raise ValueError("camera_params is empty. Please ensure camera parameters are properly passed.")
-        
-        # Reshape camera_params to match the batch size of vertices
-        if camera_params.shape[0] != batch_size:
-            if camera_params.shape[0] < batch_size:
-                # Repeat camera_params to match batch_size
-                camera_params = camera_params.repeat(batch_size, 1)
-            else:
-                camera_params = camera_params[:batch_size]
         
         # Ensure tensors are contiguous
         camera_params = camera_params.contiguous()

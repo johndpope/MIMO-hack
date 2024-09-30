@@ -107,6 +107,9 @@ def test_motion_encoder(data_dir, cam_ids_to_use):
     print(f"Loaded SMPLX parameters shapes: betas={betas.shape}, poses={poses.shape}, trans={trans.shape}")
 
     print("Preparing camera parameters...")
+    
+    
+    print("Preparing camera parameters...")
     camera_params = []
     for cam_id in cam_ids_to_use:
         cam_ssn = cam_ssn_list[cam_id]
@@ -114,7 +117,8 @@ def test_motion_encoder(data_dir, cam_ids_to_use):
         T = torch.tensor(cam_data[cam_ssn]['T'], dtype=torch.float32)
         camera_params.append(torch.cat([R, T]))
     camera_params = torch.stack(camera_params)
-    print(f"Camera parameters shape: {camera_params.shape}")
+    print(f"Initial camera parameters shape: {camera_params.shape}")
+    print(f"Initial camera parameters first few values: {camera_params[:5, :5]}")
 
     num_frames = poses.shape[0]
     num_cameras = len(cam_ids_to_use)
@@ -124,6 +128,9 @@ def test_motion_encoder(data_dir, cam_ids_to_use):
     print("Repeating camera params for each frame...")
     camera_params = camera_params.unsqueeze(0).repeat(num_frames, 1, 1)
     print(f"Camera parameters shape after repeat: {camera_params.shape}")
+    print(f"Camera parameters first few values after repeat: {camera_params[:5, :5, :5]}")
+
+    
 
     print("Combining poses and trans...")
     smplx_params = torch.cat([poses, trans], dim=-1)
