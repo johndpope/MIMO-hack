@@ -363,14 +363,13 @@ class StructuredMotionEncoder(nn.Module):
             nn.Linear(256, 512)
         )
 
-    def forward(self, betas, smpl_params, camera_params):
-        print(f"StructuredMotionEncoder input shapes: smpl_params={smpl_params.shape}, camera_params={camera_params.shape}")
+     def forward(self, betas, smpl_params, camera_params):
+        print(f"StructuredMotionEncoder input shapes: betas={betas.shape}, smpl_params={smpl_params.shape}, camera_params={camera_params.shape}")
         print(f"betas device: {betas.device}")
         print(f"smpl_params device: {smpl_params.device}")
         print(f"camera_params device: {camera_params.device}")
 
         print(f"latent_codes min: {self.latent_codes.min()}, max: {self.latent_codes.max()}")
-
 
         # Check the dimensionality of smpl_params
         if smpl_params.dim() == 3:
@@ -392,15 +391,6 @@ class StructuredMotionEncoder(nn.Module):
         motion_code_list = []
 
         for frame_idx in range(num_frames):
-
-            # Visualize the pose for the first frame of the first batch item
-            if frame_idx == 0 and smpl_params.shape[0] > 0:
-                visualize_smplx_pose(self.smplx, 
-                                     frame_betas[0:1], 
-                                     global_orient[0:1], 
-                                     body_pose[0:1], 
-                                     trans[0:1])
-                
             # Extract parameters for the current frame
             frame_smpl_params = smpl_params[:, frame_idx, :]
             frame_camera_params = camera_params[:, frame_idx, :].squeeze(1)
@@ -418,16 +408,25 @@ class StructuredMotionEncoder(nn.Module):
             left_hand_pose = poses[:, 75:120]        # Indices 75:120 (45 parameters)
             right_hand_pose = poses[:, 120:165]      # Indices 120:165 (45 parameters)
 
-            # Prepare betas
-            frame_betas = betas if betas.shape[0] > 1 else betas.expand(frame_smpl_params.shape[0], -1)
+            # Prepare betas for the current frame
+            frame_betas = betas if betas.shape[0] == batch_size else betas.expand(batch_size, -1)
 
             # Define expression
             num_expression_coeffs = self.smplx.num_expression_coeffs
             expression = torch.zeros(
-                [frame_smpl_params.shape[0], num_expression_coeffs],
+                [batch_size, num_expression_coeffs],
                 dtype=frame_smpl_params.dtype,
                 device=frame_smpl_params.device
             )
+
+
+            # Visualize the pose for the first frame of the first batch item
+            if frame_idx == 0 and smpl_params.shape[0] > 0:
+                visualize_smplx_pose(self.smplx, 
+                                     frame_betas[0:1], 
+                                     global_orient[0:1], 
+                                     body_pose[0:1], 
+                                     trans[0:1])
 
             # SMPL model forward pass
             smpl_output = self.smplx(
@@ -440,18 +439,16 @@ class StructuredMotionEncoder(nn.Module):
                 leye_pose=leye_pose,
                 reye_pose=reye_pose,
                 expression=expression,
-                transl=trans,  # Use 'trans' instead of 'batch_trans'
+                transl=trans,
                 pose2rot=True,
             )
             vertices = smpl_output.vertices  # Shape: [batch_size, num_vertices, 3]
-
-
 
             # Project to 2D
             projected_vertices = self.project_to_2d(vertices, frame_camera_params)
 
             # Rasterize
-            batch_expanded_codes = self.latent_codes.unsqueeze(0).expand(frame_smpl_params.shape[0], -1, -1)
+            batch_expanded_codes = self.latent_codes.unsqueeze(0).expand(batch_size, -1, -1)
             print(f"batch_expanded_codes shape: {batch_expanded_codes.shape}")
             print(f"batch_expanded_codes min: {batch_expanded_codes.min()}, max: {batch_expanded_codes.max()}")
             feature_map = self.rasterizer(projected_vertices, self.faces_tensor, batch_expanded_codes)
@@ -460,7 +457,7 @@ class StructuredMotionEncoder(nn.Module):
             assert vertices.shape[1] == batch_expanded_codes.shape[1], "Mismatch in vertices and vertex colors"
 
             # Reshape feature_map
-            feature_map = feature_map.view(frame_smpl_params.shape[0], self.feature_dim, 1, self.image_size, self.image_size)
+            feature_map = feature_map.view(batch_size, self.feature_dim, 1, self.image_size, self.image_size)
 
             # Encode feature_map
             frame_motion_code = self.encoder(feature_map)
