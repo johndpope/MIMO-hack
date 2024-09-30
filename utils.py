@@ -29,8 +29,7 @@ import matplotlib.pyplot as plt
 from mpl_toolkits.mplot3d import Axes3D
 
 
-
-def visualize_smplx_pose(smplx_model, betas, global_orient, body_pose, transl=None):
+def visualize_smplx_pose(smplx_model, betas, global_orient, body_pose, transl=None, save_path='smplx_pose.png'):
     # Ensure inputs are on the correct device
     device = next(smplx_model.parameters()).device
     betas = betas.to(device)
@@ -70,7 +69,12 @@ def visualize_smplx_pose(smplx_model, betas, global_orient, body_pose, transl=No
 
     plt.title('SMPL-X Pose Visualization')
     plt.tight_layout()
-    plt.show()
+
+    # Save the figure
+    plt.savefig(save_path)
+    plt.close(fig)  # Close the figure to free up memory
+
+    print(f"SMPL-X pose visualization saved to {save_path}")
 
 
 def load_video(video_path):
