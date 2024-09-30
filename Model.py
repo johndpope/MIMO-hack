@@ -59,8 +59,6 @@ class TemporalUNet3DConditionModel(UNet3DConditionModel):
 
 
 
-
-
 class DifferentiableRasterizer(nn.Module):
     def __init__(self, image_size):
         super(DifferentiableRasterizer, self).__init__()
@@ -68,119 +66,165 @@ class DifferentiableRasterizer(nn.Module):
         self.ctx = dr.RasterizeGLContext()
         
     def forward(self, vertices, faces, vertex_colors):
+        print(f"Faces shape: {faces.shape}, dtype: {faces.dtype}")
+        assert faces.dim() == 2 and faces.shape[1] == 3, f"Expected faces to be 2D tensor with 3 columns, got shape {faces.shape}"
+        assert faces.dtype == torch.int64, f"Expected faces to be of dtype torch.int64, got {faces.dtype}"
+        print("--- DifferentiableRasterizer forward start ---")
+        print("Input shapes:")
+        print(f"  vertices: {vertices.shape}")
+        print(f"  faces: {faces.shape}")
+        print(f"  vertex_colors: {vertex_colors.shape}")
+        
         batch_size, num_vertices, _ = vertices.shape
         device = vertices.device
+        print(f"batch_size: {batch_size}, num_vertices: {num_vertices}, device: {device}")
 
         faces = faces.to(torch.int32)  # Ensure faces is of int32 type
+        faces = faces.contiguous()     # Shape: [num_faces, 3]
+        print(f"Faces shape after processing: {faces.shape}")
 
-    # Remove the batch dimension from faces if it exists
-        if faces.dim() == 3:
-            faces = faces.squeeze(0)
-            
-        vertices = vertices.contiguous()
-        faces = faces.contiguous()
-        vertex_colors = vertex_colors.contiguous()
-
-        # faces = self.faces_tensor.to(device)
-        # faces = faces.unsqueeze(0).expand(vertices.shape[0], -1, -1)
+        vertices = vertices.contiguous()          # Shape: [batch_size, num_vertices, 3]
+        vertex_colors = vertex_colors.contiguous()  # Shape: [batch_size, num_vertices, feature_dim]
+        print(f"Vertices shape after contiguous: {vertices.shape}")
+        print(f"Vertex colors shape after contiguous: {vertex_colors.shape}")
 
         # Create perspective projection matrix
         fov = 60
         aspect_ratio = 1.0
         near = 0.1
         far = 100
-        proj_mtx = self.perspective_projection(fov, aspect_ratio, near, far)
+        proj_mtx = self.perspective_projection(fov, aspect_ratio, near, far).to(device)
+        print(f"Projection matrix shape: {proj_mtx.shape}")
 
         # Apply perspective projection
         vertices_proj = self.apply_perspective(vertices, proj_mtx)
+        print(f"Projected vertices shape: {vertices_proj.shape}")
 
-        # Prepare vertices for nvdiffrast (clip space)
         # Prepare vertices for nvdiffrast (clip space)
         vertices_clip = torch.cat([vertices_proj, torch.ones_like(vertices_proj[..., :1])], dim=-1)
         vertices_clip[..., :2] = -vertices_clip[..., :2]
         vertices_clip[..., 2] = vertices_clip[..., 2] * 2 - 1  # Map z from [0, 1] to [-1, 1]
+        print(f"Clip space vertices shape: {vertices_clip.shape}")
 
-        print(f"vertices_clip shape: {vertices_clip.shape}")
-        print(f"vertices_clip contiguous: {vertices_clip.is_contiguous()}")
-        print(f"faces contiguous: {faces.is_contiguous()}")
+        print(f"vertices_clip min: {vertices_clip.min()}, max: {vertices_clip.max()}")
+        print(f"faces min: {faces.min()}, max: {faces.max()}")
+
         # Rasterize
+        print("Starting rasterization...")
         rast, _ = dr.rasterize(self.ctx, vertices_clip, faces, resolution=[self.image_size, self.image_size])
+        print(f"Rasterization output shape: {rast.shape}")
 
         # Interpolate features
-        feature_maps = dr.interpolate(vertex_colors, rast, faces)
-        
-        # Apply simple shading (similar to SoftPhongShader)
-        normals = dr.interpolate(self.compute_normals(vertices, faces), rast, faces)
-        light_dir = torch.tensor([0, 0, -1], dtype=torch.float32, device=device).expand(batch_size, 3)
-        diffuse = torch.sum(normals * light_dir.unsqueeze(1).unsqueeze(1), dim=-1).clamp(min=0)
-        shaded_features = feature_maps * diffuse.unsqueeze(-1)
-        
-        return shaded_features
+        print("Starting feature interpolation...")
+        try:
+            feature_maps_tuple = dr.interpolate(vertex_colors, rast, faces)
+            if isinstance(feature_maps_tuple, tuple):
+                feature_maps, _ = feature_maps_tuple
+            else:
+                feature_maps = feature_maps_tuple
+            print(f"Interpolated feature maps shape: {feature_maps.shape}")
+        except Exception as e:
+            print(f"Error during feature interpolation: {str(e)}")
+            print(f"vertex_colors shape: {vertex_colors.shape}, rast shape: {rast.shape}, faces shape: {faces.shape}")
+            raise
 
+        # Compute and interpolate normals
+        print("Computing normals...")
+        normals = self.compute_normals(vertices, faces)
+        print(f"Computed normals shape: {normals.shape}")
+        
+        print("Interpolating normals...")
+        try:
+            interpolated_normals = dr.interpolate(normals, rast, faces)
+            if isinstance(interpolated_normals, tuple):
+                interpolated_normals, _ = interpolated_normals
+            print(f"Interpolated normals shape: {interpolated_normals.shape}")
+        except Exception as e:
+            print(f"Error during normal interpolation: {str(e)}")
+            print(f"normals shape: {normals.shape}, rast shape: {rast.shape}, faces shape: {faces.shape}")
+            raise
+
+    
+
+        # Compute light direction (you may want to make this configurable)
+        light_dir = torch.tensor([0.0, 0.0, 1.0], device=vertices.device).expand_as(interpolated_normals)
+        
+        # Compute diffuse shading
+        diffuse = torch.sum(interpolated_normals * light_dir, dim=-1, keepdim=True).clamp(min=0)
+        print(f"Diffuse shading shape: {diffuse.shape}")
+        
+        # Apply diffuse shading to feature maps
+        shaded_features = feature_maps * diffuse
+        print(f"Final shaded features shape: {shaded_features.shape}")
+
+        return shaded_features
+    
     def perspective_projection(self, fov, aspect_ratio, near, far):
+        print("--- perspective_projection start ---")
+        print(f"Input parameters: fov={fov}, aspect_ratio={aspect_ratio}, near={near}, far={far}")
         fov_rad = np.radians(fov)
         f = 1 / np.tan(fov_rad / 2)
-        return torch.tensor([
+        proj_matrix = torch.tensor([
             [f / aspect_ratio, 0, 0, 0],
             [0, f, 0, 0],
             [0, 0, (far + near) / (near - far), (2 * far * near) / (near - far)],
             [0, 0, -1, 0]
         ], dtype=torch.float32)
+        print(f"Projection matrix:\n{proj_matrix}")
+        print("--- perspective_projection end ---")
+        return proj_matrix
 
     def apply_perspective(self, vertices, proj_mtx):
+        print("--- apply_perspective start ---")
+        print(f"Input vertices shape: {vertices.shape}")
+        print(f"Projection matrix shape: {proj_mtx.shape}")
+        
         # Convert to homogeneous coordinates
         vertices_hom = torch.cat([vertices, torch.ones_like(vertices[..., :1])], dim=-1)
+        print(f"Homogeneous vertices shape: {vertices_hom.shape}")
+        
         # Apply projection matrix
         vertices_proj = torch.matmul(vertices_hom, proj_mtx.T.to(vertices.device))
+        print(f"Projected vertices shape (before division): {vertices_proj.shape}")
+        
         # Perspective division
         vertices_proj = vertices_proj[..., :3] / vertices_proj[..., 3:]
+        print(f"Final projected vertices shape: {vertices_proj.shape}")
+        print(f"Projected vertices min: {vertices_proj.min()}, max: {vertices_proj.max()}")
+        print("--- apply_perspective end ---")
         return vertices_proj
 
     def compute_normals(self, vertices, faces):
-        v0 = torch.index_select(vertices, 1, faces[:, :, 0])
-        v1 = torch.index_select(vertices, 1, faces[:, :, 1])
-        v2 = torch.index_select(vertices, 1, faces[:, :, 2])
+        print("--- compute_normals start ---")
+        print(f"Input vertices shape: {vertices.shape}")
+        print(f"Input faces shape: {faces.shape}")
+        
+        batch_size, num_vertices, _ = vertices.shape
+        num_faces = faces.shape[0]
+        print(f"batch_size: {batch_size}, num_faces: {num_faces}")
+        
+        # Expand faces to match batch size and convert to int64
+        faces_expanded = faces.unsqueeze(0).expand(batch_size, -1, -1).to(torch.int64)
+        print(f"Expanded faces shape: {faces_expanded.shape}")
+        
+        # Extract face indices
+        f0, f1, f2 = faces_expanded[:, :, 0], faces_expanded[:, :, 1], faces_expanded[:, :, 2]
+        print(f"Face indices shapes: f0={f0.shape}, f1={f1.shape}, f2={f2.shape}")
+        
+        # Gather vertex positions for each face
+        v0 = vertices.gather(1, f0.unsqueeze(-1).expand(-1, -1, 3))
+        v1 = vertices.gather(1, f1.unsqueeze(-1).expand(-1, -1, 3))
+        v2 = vertices.gather(1, f2.unsqueeze(-1).expand(-1, -1, 3))
+        print(f"Gathered vertices shapes: v0={v0.shape}, v1={v1.shape}, v2={v2.shape}")
+        
+        # Compute normals
         normals = torch.cross(v1 - v0, v2 - v0, dim=-1)
         normals = F.normalize(normals, dim=-1)
+        print(f"Computed normals shape: {normals.shape}")
+        print(f"Normals min: {normals.min()}, max: {normals.max()}")
+        print("--- compute_normals end ---")
         return normals
 
-# pytorch3d
-# class DifferentiableRasterizer(nn.Module):
-#     def __init__(self, image_size):
-#         super(DifferentiableRasterizer, self).__init__()
-#         self.image_size = image_size
-#         self.raster_settings = RasterizationSettings(
-#             image_size=image_size, 
-#             blur_radius=0.0, 
-#             faces_per_pixel=1
-#         )
-#         self.renderer = MeshRenderer(
-#             rasterizer=MeshRasterizer(raster_settings=self.raster_settings),
-#             shader=SoftPhongShader()
-#         )
-    
-#     def forward(self, vertices, faces, features):
-#         batch_size, num_vertices, _ = vertices.shape
-#         device = vertices.device
-
-#         # Create a batch of meshes
-#         meshes = Meshes(verts=vertices, faces=faces.expand(batch_size, -1, -1))
-        
-#         # Create textures from features
-#         textures = TexturesVertex(verts_features=features)
-#         meshes.textures = textures
-
-#         # Create dummy cameras (assuming orthographic projection for simplicity)
-#         cameras = PerspectiveCameras(device=device, R=torch.eye(3).unsqueeze(0).expand(batch_size, -1, -1),
-#                                      T=torch.zeros(batch_size, 3), fov=60)
-
-#         # Render the meshes
-#         rendered_images = self.renderer(meshes, cameras=cameras)
-        
-#         # Extract the feature maps (discard alpha channel)
-#         feature_maps = rendered_images[..., :features.shape[-1]]
-        
-#         return feature_maps
 
 def move_to_device(module, device):
     for param in module.parameters():
@@ -210,17 +254,16 @@ class StructuredMotionEncoder(nn.Module):
         )
 
         self.encoder = nn.Sequential(
-            nn.Conv3d(feature_dim, 64, kernel_size=3, padding=1),
+            nn.Conv3d(self.feature_dim, 64, kernel_size=(3, 3, 3), padding=(1, 1, 1)),
             nn.ReLU(),
-            nn.Conv3d(64, 128, kernel_size=3, padding=1),
+            nn.Conv3d(64, 128, kernel_size=(3, 3, 3), padding=(1, 1, 1)),
             nn.ReLU(),
-            nn.Conv3d(128, 256, kernel_size=3, padding=1),
+            nn.Conv3d(128, 256, kernel_size=(3, 3, 3), padding=(1, 1, 1)),
             nn.ReLU(),
             nn.AdaptiveAvgPool3d(1),
             nn.Flatten(),
             nn.Linear(256, 512)
         )
-
 
     
     def forward(self, betas, smpl_params, camera_params):
@@ -238,8 +281,6 @@ class StructuredMotionEncoder(nn.Module):
         expanded_codes = self.latent_codes.unsqueeze(0).expand(batch_size * num_frames, -1, -1)
         print(f"Expanded codes shape: {expanded_codes.shape}")
         
- 
-        
         # Reshape smpl_params to [num_frames, param_dim]
         smpl_params = smpl_params.view(-1, param_dim)
         num_frames = smpl_params.shape[0]
@@ -247,6 +288,7 @@ class StructuredMotionEncoder(nn.Module):
         # Split smpl_params into poses and translations
         poses = smpl_params[:, :165]       # Shape: [num_frames, 165]
         trans = smpl_params[:, 165:168]    # Shape: [num_frames, 3]
+
 
         # Now, split poses into individual components
         global_orient = poses[:, :3]             # Indices 0:3
@@ -263,6 +305,7 @@ class StructuredMotionEncoder(nn.Module):
 
     # Get number of expression coefficients
         num_expression_coeffs = self.smplx.num_expression_coeffs
+
 
 
   # Process frames in batches
@@ -309,54 +352,90 @@ class StructuredMotionEncoder(nn.Module):
         
 
         vertices = torch.cat(vertices_list, dim=0)
-         # Move faces_tensor to the correct device and expand as needed
-        faces = self.faces_tensor.to(device)
-        # faces = faces.unsqueeze(0).expand(vertices.shape[0], -1, -1)
-        print(f"SMPL output shapes: vertices={vertices.shape}, faces={faces.shape}")
+        faces = self.faces_tensor  # Already on the correct device
 
+        # Flatten camera_params to match the number of frames
+        camera_params = camera_params.view(-1, camera_params.shape[-1])  # Shape: [batch_size * num_frames, 12]
 
-        # Rest of the method remains unchanged
-        projected_vertices = self.project_to_2d(vertices, camera_params.view(-1, camera_params.shape[-1]))
-        print(f"Projected vertices shape: {projected_vertices.shape}")
+        # Prepare expanded_codes
+        expanded_codes = self.latent_codes.unsqueeze(0).expand(vertices.shape[0], -1, -1)
+
+               # Process frames in batches
+        batch_size_raster = 32  # Adjust as needed
+        feature_maps_list = []
+        for i in range(0, num_frames, batch_size_raster):
+            batch_end = min(i + batch_size_raster, num_frames)
+            batch_vertices = vertices[i:batch_end]
+            batch_camera_params = camera_params[:, i:batch_end].squeeze(0)
+            batch_projected_vertices = self.project_to_2d(batch_vertices, batch_camera_params)
+            batch_expanded_codes = expanded_codes[i:batch_end]
+
+            # Ensure tensors are contiguous
+            batch_projected_vertices = batch_projected_vertices.contiguous()
+            batch_expanded_codes = batch_expanded_codes.contiguous()
+
+            # Rasterize the batch
+            batch_feature_maps = self.rasterizer(batch_projected_vertices, faces, batch_expanded_codes)
+            feature_maps_list.append(batch_feature_maps)
+
+        # Concatenate the feature maps from all batches
+        feature_maps = torch.cat(feature_maps_list, dim=0)
         
-        vertices = vertices.to(device)
-        faces = faces.to(device)
-        # features = features.to(device)
-        projected_vertices = projected_vertices.to(device)
+        print(f"Concatenated feature maps shape: {feature_maps.shape}")
 
-
-        # Make tensors contiguous
-        projected_vertices = projected_vertices.contiguous()
-        faces = faces.contiguous()
-        expanded_codes = expanded_codes.contiguous()
-
-
-
-        feature_maps = self.rasterizer(projected_vertices, faces, expanded_codes)
-        print(f"Feature maps shape after rasterization: {feature_maps.shape}")
+        # Reshape feature_maps appropriately
+        feature_maps = feature_maps.view(num_frames, self.image_size, self.image_size, self.feature_dim)
+        feature_maps = feature_maps.permute(0, 3, 1, 2)  # [num_frames, feature_dim, image_size, image_size]
+        feature_maps = feature_maps.unsqueeze(0)  # Add batch dimension
         
-        feature_maps = feature_maps.view(batch_size, num_frames, self.feature_dim, self.rasterizer.image_size, self.rasterizer.image_size)
-        feature_maps = feature_maps.permute(0, 2, 1, 3, 4)
-        print(f"Feature maps shape after reshaping: {feature_maps.shape}")
-        
+        print(f"Reshaped feature maps shape: {feature_maps.shape}")
+
+        # Continue with the rest of your code
         motion_code = self.encoder(feature_maps)
-        print(f"Motion code shape: {motion_code.shape}")
-        
+
         return motion_code
-    
+
     def project_to_2d(self, vertices, camera_params):
-        # Simplified projection, assuming camera_params contains rotation and translation
-        R = camera_params[:, :9].view(-1, 3, 3)
-        T = camera_params[:, 9:12]
+        print(f"project_to_2d input shapes: vertices={vertices.shape}, camera_params={camera_params.shape}")
+        
+        batch_size = vertices.shape[0]
+        
+        # Check if camera_params is empty
+        if camera_params.numel() == 0:
+            raise ValueError("camera_params is empty. Please ensure camera parameters are properly passed.")
+        
+        # Reshape camera_params to match the batch size of vertices
+        if camera_params.shape[0] != batch_size:
+            if camera_params.shape[0] < batch_size:
+                # Repeat camera_params to match batch_size
+                camera_params = camera_params.repeat(batch_size, 1)
+            else:
+                camera_params = camera_params[:batch_size]
+        
+        # Ensure tensors are contiguous
+        camera_params = camera_params.contiguous()
+        vertices = vertices.contiguous()
+        
+        # Reshape camera parameters
+        try:
+            R = camera_params[:, :9].reshape(batch_size, 3, 3)
+            T = camera_params[:, 9:12].reshape(batch_size, 3, 1)
+        except RuntimeError as e:
+            print(f"Error reshaping camera parameters: {e}")
+            print(f"camera_params shape: {camera_params.shape}")
+            raise
+        
+        print(f"R shape: {R.shape}, T shape: {T.shape}")
         
         # Apply rotation and translation
-        projected_vertices = torch.bmm(vertices, R.transpose(1, 2)) + T.unsqueeze(1)
+        projected_vertices = torch.bmm(vertices, R.transpose(1, 2)) + T.transpose(1, 2)
         
         # Perspective division
-        projected_vertices = projected_vertices / projected_vertices[:, :, 2:]
+        projected_vertices = projected_vertices / (projected_vertices[:, :, 2:3] + 1e-7)  # Added small epsilon to avoid division by zero
+        
+        print(f"projected_vertices shape: {projected_vertices.shape}")
         
         return projected_vertices
-
 
 class CanonicalIdentityEncoder(nn.Module):
     def __init__(self, clip_model):
