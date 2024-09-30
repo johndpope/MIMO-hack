@@ -289,12 +289,20 @@ class DifferentiableRasterizer(nn.Module):
             print("Warning: image_np contains NaN values. Replacing NaNs with zeros.")
             image_np = np.nan_to_num(image_np, nan=0.0)
 
+        # Add debug grid
+        grid_step = 16  # Adjust this value to change grid density
+        image_np[::grid_step, :] = 1.0
+        image_np[:, ::grid_step] = 1.0
+
         # Normalize and scale
         min_val = image_np.min()
         max_val = image_np.max()
-        if max_val - min_val == 0:
-            print("Warning: max_val equals min_val. Setting image to gray (128).")
+        print(f"Image value range: min={min_val}, max={max_val}")
+        if max_val - min_val < 1e-6:
+            print("Warning: max_val is very close to min_val. Setting image to gray (128) with white grid.")
             image_np = np.full_like(image_np, 128, dtype=np.uint8)
+            image_np[::grid_step, :] = 255
+            image_np[:, ::grid_step] = 255
         else:
             image_np = (image_np - min_val) / (max_val - min_val)
             image_np = (image_np * 255).astype(np.uint8)
@@ -303,11 +311,15 @@ class DifferentiableRasterizer(nn.Module):
         from PIL import Image
         try:
             image_pil = Image.fromarray(image_np)
-            image_pil.save('rasterized_image.png')
-            print("Image saved successfully as 'rasterized_image.png'.")
+            image_pil.save('rasterized_image_with_grid.png')
+            print("Image saved successfully as 'rasterized_image_with_grid.png'.")
         except Exception as e:
             print(f"🔥 Error saving image: {e}")
             print(f"image_np shape: {image_np.shape}, dtype: {image_np.dtype}")
+
+        # Print additional debug information
+        print(f"Unique values in image_np: {np.unique(image_np)}")
+        print(f"Image statistics: mean={np.mean(image_np)}, std={np.std(image_np)}")
 
         
 def move_to_device(module, device):
