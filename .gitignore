@@ -162,3 +162,5 @@ cython_debug/
 #.idea/
 SMPLX_NEUTRAL.npz
 SMPLX_NEUTRAL.pkl
+SMPLX_FEMALE.npz
+SMPLX_MALE.npz

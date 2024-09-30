@@ -96,7 +96,7 @@ def test_motion_encoder(data_dir, cam_ids_to_use):
     feature_dim = 64
     image_size = 256
     motion_encoder = StructuredMotionEncoder(num_vertices, feature_dim, image_size)
-
+    motion_encoder = motion_encoder.to('cuda')
     print("Loading camera parameters...")
     cam_data = get_cams(data_dir)
     print("Camera data:", cam_data)

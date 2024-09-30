@@ -67,9 +67,22 @@ class DifferentiableRasterizer(nn.Module):
         self.image_size = image_size
         self.ctx = dr.RasterizeGLContext()
         
-    def forward(self, vertices, faces, features):
+    def forward(self, vertices, faces, vertex_colors):
         batch_size, num_vertices, _ = vertices.shape
         device = vertices.device
+
+        faces = faces.to(torch.int32)  # Ensure faces is of int32 type
+
+    # Remove the batch dimension from faces if it exists
+        if faces.dim() == 3:
+            faces = faces.squeeze(0)
+            
+        vertices = vertices.contiguous()
+        faces = faces.contiguous()
+        vertex_colors = vertex_colors.contiguous()
+
+        # faces = self.faces_tensor.to(device)
+        # faces = faces.unsqueeze(0).expand(vertices.shape[0], -1, -1)
 
         # Create perspective projection matrix
         fov = 60
@@ -82,15 +95,19 @@ class DifferentiableRasterizer(nn.Module):
         vertices_proj = self.apply_perspective(vertices, proj_mtx)
 
         # Prepare vertices for nvdiffrast (clip space)
-        vertices_clip = vertices_proj.clone()
+        # Prepare vertices for nvdiffrast (clip space)
+        vertices_clip = torch.cat([vertices_proj, torch.ones_like(vertices_proj[..., :1])], dim=-1)
         vertices_clip[..., :2] = -vertices_clip[..., :2]
-        vertices_clip[..., 2] = 1 - vertices_clip[..., 2]
+        vertices_clip[..., 2] = vertices_clip[..., 2] * 2 - 1  # Map z from [0, 1] to [-1, 1]
 
+        print(f"vertices_clip shape: {vertices_clip.shape}")
+        print(f"vertices_clip contiguous: {vertices_clip.is_contiguous()}")
+        print(f"faces contiguous: {faces.is_contiguous()}")
         # Rasterize
         rast, _ = dr.rasterize(self.ctx, vertices_clip, faces, resolution=[self.image_size, self.image_size])
 
         # Interpolate features
-        feature_maps = dr.interpolate(features, rast, faces)
+        feature_maps = dr.interpolate(vertex_colors, rast, faces)
         
         # Apply simple shading (similar to SoftPhongShader)
         normals = dr.interpolate(self.compute_normals(vertices, faces), rast, faces)
@@ -164,6 +181,15 @@ class DifferentiableRasterizer(nn.Module):
 #         feature_maps = rendered_images[..., :features.shape[-1]]
         
 #         return feature_maps
+
+def move_to_device(module, device):
+    for param in module.parameters():
+        param.data = param.data.to(device)
+    for buffer in module.buffers():
+        buffer.data = buffer.data.to(device)
+    for child in module.children():
+        move_to_device(child, device)
+        
 class StructuredMotionEncoder(nn.Module):
     def __init__(self, num_vertices, feature_dim, image_size):
         super(StructuredMotionEncoder, self).__init__()
@@ -194,6 +220,8 @@ class StructuredMotionEncoder(nn.Module):
             nn.Flatten(),
             nn.Linear(256, 512)
         )
+
+
     
     def forward(self, betas, smpl_params, camera_params):
         print(f"StructuredMotionEncoder input shapes: smpl_params={smpl_params.shape}, camera_params={camera_params.shape}")
@@ -202,11 +230,15 @@ class StructuredMotionEncoder(nn.Module):
         print(f"camera_params device: {camera_params.device}")
         batch_size, num_frames, param_dim = smpl_params.shape
         device = smpl_params.device
+
+        # Ensure SMPLX model is on the correct device
+        self.smplx = self.smplx.to(smpl_params.device)
+        move_to_device(self.smplx, smpl_params.device)
         
         expanded_codes = self.latent_codes.unsqueeze(0).expand(batch_size * num_frames, -1, -1)
         print(f"Expanded codes shape: {expanded_codes.shape}")
         
-  
+ 
         
         # Reshape smpl_params to [num_frames, param_dim]
         smpl_params = smpl_params.view(-1, param_dim)
@@ -279,7 +311,7 @@ class StructuredMotionEncoder(nn.Module):
         vertices = torch.cat(vertices_list, dim=0)
          # Move faces_tensor to the correct device and expand as needed
         faces = self.faces_tensor.to(device)
-        faces = faces.unsqueeze(0).expand(vertices.shape[0], -1, -1)
+        # faces = faces.unsqueeze(0).expand(vertices.shape[0], -1, -1)
         print(f"SMPL output shapes: vertices={vertices.shape}, faces={faces.shape}")
 
 
@@ -291,6 +323,14 @@ class StructuredMotionEncoder(nn.Module):
         faces = faces.to(device)
         # features = features.to(device)
         projected_vertices = projected_vertices.to(device)
+
+
+        # Make tensors contiguous
+        projected_vertices = projected_vertices.contiguous()
+        faces = faces.contiguous()
+        expanded_codes = expanded_codes.contiguous()
+
+
 
         feature_maps = self.rasterizer(projected_vertices, faces, expanded_codes)
         print(f"Feature maps shape after rasterization: {feature_maps.shape}")
