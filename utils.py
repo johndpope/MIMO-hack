@@ -25,6 +25,53 @@ from torchvision.io import read_video
 from torchvision.transforms import Resize
 from sam2.build_sam import build_sam2
 from sam2.sam2_image_predictor import SAM2ImagePredictor
+import matplotlib.pyplot as plt
+from mpl_toolkits.mplot3d import Axes3D
+
+
+
+def visualize_smplx_pose(smplx_model, betas, global_orient, body_pose, transl=None):
+    # Ensure inputs are on the correct device
+    device = next(smplx_model.parameters()).device
+    betas = betas.to(device)
+    global_orient = global_orient.to(device)
+    body_pose = body_pose.to(device)
+    if transl is not None:
+        transl = transl.to(device)
+
+    # Forward pass through SMPL-X model
+    output = smplx_model(
+        betas=betas,
+        global_orient=global_orient,
+        body_pose=body_pose,
+        transl=transl,
+        return_verts=True
+    )
+
+    # Get vertices and faces
+    vertices = output.vertices.detach().cpu().numpy().squeeze()
+    faces = smplx_model.faces
+
+    # Create 3D plot
+    fig = plt.figure(figsize=(10, 10))
+    ax = fig.add_subplot(111, projection='3d')
+
+    # Plot the mesh
+    mesh = ax.plot_trisurf(vertices[:, 0], vertices[:, 1], vertices[:, 2], 
+                           triangles=faces, shade=True, color='cyan', alpha=0.8)
+
+    # Set equal aspect ratio
+    ax.set_box_aspect((np.ptp(vertices[:, 0]), np.ptp(vertices[:, 1]), np.ptp(vertices[:, 2])))
+
+    # Set labels
+    ax.set_xlabel('X')
+    ax.set_ylabel('Y')
+    ax.set_zlabel('Z')
+
+    plt.title('SMPL-X Pose Visualization')
+    plt.tight_layout()
+    plt.show()
+
 
 def load_video(video_path):
     """Load video frames as tensors."""

@@ -16,6 +16,7 @@ from pytorch3d.renderer import (
     SoftPhongShader,
     TexturesVertex
 )
+from utils import visualize_smplx_pose
 # from utils import load_video,estimate_depth,detect_and_track_humans,extract_pose,inpaint_scene,compute_masks
 from diffusers import UNet3DConditionModel, AutoencoderKL
 from diffusers.models.attention import BasicTransformerBlock
@@ -391,6 +392,15 @@ class StructuredMotionEncoder(nn.Module):
         motion_code_list = []
 
         for frame_idx in range(num_frames):
+
+            # Visualize the pose for the first frame of the first batch item
+            if frame_idx == 0 and smpl_params.shape[0] > 0:
+                visualize_smplx_pose(self.smplx, 
+                                     frame_betas[0:1], 
+                                     global_orient[0:1], 
+                                     body_pose[0:1], 
+                                     trans[0:1])
+                
             # Extract parameters for the current frame
             frame_smpl_params = smpl_params[:, frame_idx, :]
             frame_camera_params = camera_params[:, frame_idx, :].squeeze(1)
