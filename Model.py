@@ -521,6 +521,21 @@ class CanonicalIdentityEncoder(nn.Module):
         local_feature = self.reference_net(canonical_image)
         return torch.cat([global_feature, local_feature], dim=1)
 
+
+class DisentangledHumanEncoder(nn.Module):
+    def __init__(self, num_vertices, feature_dim, image_size):
+        super(DisentangledHumanEncoder, self).__init__()
+        self.motion_encoder = StructuredMotionEncoder(num_vertices, feature_dim, image_size)
+        
+        clip_model, _ = clip.load("ViT-B/32", device="cpu")
+        self.identity_encoder = CanonicalIdentityEncoder(clip_model)
+
+    def forward(self, smpl_params, camera_params, canonical_image):
+        motion_code = self.motion_encoder(smpl_params, camera_params)
+        identity_code = self.identity_encoder(canonical_image)
+        return motion_code, identity_code
+    
+    
 class SceneOcclusionEncoder(nn.Module):
     def __init__(self):
         super(SceneOcclusionEncoder, self).__init__()
@@ -581,31 +596,29 @@ class DiffusionDecoder(nn.Module):
         return self.vae.decode(x).sample
     
 class MIMOModel(nn.Module):
-    def __init__(self,  feature_dim, image_size):
+    def __init__(self, feature_dim, image_size):
         super().__init__()
-        num_vertices = 10475  # Update to match SMPL-X vertices
+        num_vertices = 10475  # SMPL-X vertices
 
-        self.motion_encoder = StructuredMotionEncoder(num_vertices, feature_dim, image_size)
-        
-        clip_model, _ = clip.load("ViT-B/32", device="cpu")
-        self.identity_encoder = CanonicalIdentityEncoder(clip_model)
-        
+        self.human_encoder = DisentangledHumanEncoder(num_vertices, feature_dim, image_size)
         self.scene_occlusion_encoder = SceneOcclusionEncoder()
         
-        condition_dim = 512 + 512 + 1024  # identity + motion + scene_occlusion
-        self.decoder = DiffusionDecoder(condition_dim)
+        motion_dim = 512  # Assuming motion_encoder output dimension
+        identity_dim = 1024  # Assuming identity_encoder output dimension (CLIP + reference net)
+        scene_occlusion_dim = 1024  # Assuming scene_occlusion_encoder output dimension
+        condition_dim = motion_dim + identity_dim + scene_occlusion_dim
         
+        self.decoder = DiffusionDecoder(condition_dim)
         self.condition_proj = nn.Linear(condition_dim, condition_dim)
     
-    def forward(self, noisy_latents, timesteps, identity_image, smpl_params, camera_params, scene_frames, occlusion_frames):
-        identity_code = self.identity_encoder(identity_image)
-        motion_code = self.motion_encoder(smpl_params, camera_params)
+    def forward(self, noisy_latents, timesteps, canonical_image, betas, smpl_params, camera_params, scene_frames, occlusion_frames):
+        motion_code, identity_code = self.human_encoder(betas, smpl_params, camera_params, canonical_image)
         scene_code = self.scene_occlusion_encoder(scene_frames)
         occlusion_code = self.scene_occlusion_encoder(occlusion_frames)
         scene_occlusion_code = torch.cat([scene_code, occlusion_code], dim=-1)
         
         # Combine all condition codes
-        condition = torch.cat([identity_code, motion_code, scene_occlusion_code], dim=-1)
+        condition = torch.cat([motion_code, identity_code, scene_occlusion_code], dim=-1)
         condition = self.condition_proj(condition)
         
         noise_pred = self.decoder(noisy_latents, timesteps, condition)
