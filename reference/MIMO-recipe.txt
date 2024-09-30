@@ -1,0 +1,226 @@
+Here is a detailed recipe for creating code to implement the **MIMO** framework described in the attached paper, "**MIMO: Controllable Character Video Synthesis with Spatial Decomposed Modeling**."
+
+---
+
+### **Recipe for Implementing the MIMO Framework**
+
+**Objective**: Develop a codebase that implements the MIMO framework to synthesize controllable character videos with attributes like character, motion, and scene, based on simple user inputs.
+
+#### **1. Understand the Framework**
+
+- **Study the Paper Thoroughly**: Begin by carefully reading the paper to understand:
+  - The overall architecture and components of the MIMO framework.
+  - The methodologies used for spatial decomposition, encoding, and decoding.
+  - The training process, including loss functions and optimization strategies.
+
+- **Identify Key Components**:
+  - **Hierarchical Spatial Layer Decomposition**: Separating video frames into human, scene, and occlusion components.
+  - **Disentangled Human Encoding**: Encoding identity and motion separately.
+  - **Scene and Occlusion Encoding**: Encoding background and occluding objects.
+  - **Composed Decoding**: Reconstructing the video using a diffusion-based decoder.
+  - **Training Strategy**: Jointly training the encoders and decoder with specific loss functions.
+
+#### **2. Set Up the Development Environment**
+
+- **Programming Language**: Use **Python** for its extensive support in deep learning and computer vision.
+
+- **Frameworks and Libraries**:
+  - **PyTorch**: For deep learning implementations.
+  - **OpenCV**: For image and video processing.
+  - **PyTorch3D**: For 3D operations and differentiable rendering.
+  - **SMPL Model**: For human body modeling.
+  - **Monocular Depth Estimation**: Models like **MiDaS**.
+  - **Pose Estimation**: Libraries like **Detectron2** or **OpenPose**.
+  - **Stable Diffusion (SD)**: For the diffusion-based decoder.
+  - **Other Utilities**: NumPy, Matplotlib, FFmpeg.
+
+- **Hardware Requirements**:
+  - **GPUs**: NVIDIA GPUs with sufficient VRAM (e.g., A100, RTX 3090).
+  - **CUDA and cuDNN**: Compatible versions with PyTorch.
+
+#### **3. Data Preparation**
+
+- **Dataset Creation**:
+  - **Collect Real Videos**: Gather a dataset of real character videos without annotations.
+  - **Generate Synthetic Videos**: Use tools like **En3D** to create synthetic character animations.
+  - **HUD-7K Dataset**: Optionally, replicate the dataset mentioned in the paper (if permissible).
+
+- **Data Preprocessing**:
+  - **Extract Frames**: Convert videos into sequences of frames.
+  - **Depth Maps**: Use a pre-trained depth estimator to compute depth maps for each frame.
+  - **Human Detection and Masking**:
+    - Use models like **Detectron2** for human detection.
+    - Generate binary masks for the human component.
+  - **Occlusion Detection**:
+    - Detect objects with depth values smaller than the human layer.
+    - Generate masks for occluding objects.
+  - **Scene Inpainting**:
+    - Apply video inpainting methods (e.g., **ProPainter**) to recover background scenes.
+  - **Mask Propagation**:
+    - Use video tracking (e.g., **SAM^2** or **ByteTrack**) to maintain consistent masks across frames.
+
+#### **4. Implement Hierarchical Spatial Layer Decomposition**
+
+- **Depth-Based Layering**:
+  - **Lift Pixels to 3D**: Associate each pixel with a depth value from the depth maps.
+  - **Separate Layers**:
+    - **Human Layer**: Extract using human masks.
+    - **Occlusion Layer**: Extract using occlusion masks.
+    - **Scene Layer**: Subtract human and occlusion layers from the original frame.
+  - **Create Masklets**: Binary masks for each component over time.
+
+- **Data Structures**:
+  - **Video Clips**: Store frames and associated masks.
+  - **Masks**: Use NumPy arrays for efficient computation.
+
+#### **5. Implement Disentangled Human Encoding**
+
+- **Structured Motion Encoding**:
+  - **Estimate SMPL Parameters**:
+    - Use models like **VIBE** or **SPIN** to estimate pose (`𝒮ₜ`) and camera parameters (`𝒞ₜ`).
+  - **Anchor Latent Codes**:
+    - Initialize latent codes (`𝒵`) corresponding to SMPL vertices.
+  - **Transform and Project**:
+    - Apply pose transformations to `𝒵`.
+    - Project transformed codes to 2D using camera parameters.
+  - **Pose Encoder**:
+    - Implement a neural network to embed 2D feature maps (`ℱₜ`) into motion codes (`𝒞ₘₒ`).
+
+- **Canonical Identity Encoding**:
+  - **Human Reposing**:
+    - Use a pre-trained model to repose the human to a canonical pose (A-pose).
+    - Models like **ARCH** or **ARCH++** can be used.
+  - **Identity Encoder**:
+    - **Global Features**: Use a **CLIP** image encoder.
+    - **Local Features**: Implement a **reference network** to capture fine details.
+    - Combine features to form the identity code (`𝒞ᵢd`).
+
+#### **6. Implement Scene and Occlusion Encoding**
+
+- **Shared VAE Encoder**:
+  - Use a pre-trained **Variational Autoencoder (VAE)** encoder.
+  - Encode the inpainted scene (`vₛ`) and occlusion (`vₒ`) components.
+  - **Full Scene Code**: Concatenate `𝒞ₛ` and `𝒞ₒ` to form `𝒞ₛₒ`.
+
+- **Encoder Architecture**:
+  - Ensure the encoder can handle temporal data if processing sequences.
+
+#### **7. Implement Composed Decoding with Diffusion Models**
+
+- **Adapt Denoising U-Net**:
+  - Use the U-Net architecture from **Stable Diffusion**.
+  - Incorporate temporal convolutional layers for video data.
+  - **Input Fusion**:
+    - Concatenate the full scene code (`𝒞ₛₒ`) with the latent noise.
+    - Process through initial layers for alignment.
+
+- **Conditioning Mechanisms**:
+  - **Motion Code (`𝒞ₘₒ`)**: Add to features before entering the U-Net.
+  - **Identity Code (`𝒞ᵢd`)**:
+    - Inject global features via cross-attention layers.
+    - Inject local features via self-attention layers.
+
+- **VAE Decoder**:
+  - Use a pre-trained VAE decoder to reconstruct images from latent space.
+
+#### **8. Training Process**
+
+- **Loss Function**:
+  - Implement the **Diffusion Noise-Prediction Loss** as per Equation (2) in the paper:
+    \[
+    \mathcal{L} = \mathbb{E}_{x_0, c_{id}, c_{so}, c_{mo}, t, \epsilon \sim \mathcal{N}(0,1)} \left[ \| \epsilon - \epsilon_\theta(x_t, c_{id}, c_{so}, c_{mo}, t) \|^2_2 \right]
+    \]
+  - **Variables**:
+    - `x₀`: Original input sample.
+    - `xₜ`: Noised sample at timestep `t`.
+    - `ε`: Gaussian noise.
+    - `ε_θ`: Denoising function implemented by the U-Net.
+
+- **Optimization**:
+  - **Optimizers**: Use Adam or AdamW with appropriate learning rates.
+  - **Training Schedule**:
+    - Set up training to run for around **50k iterations** with a **batch size of 4**.
+    - Use **24 video frames** per batch as per the paper.
+
+- **Hardware Setup**:
+  - If available, use **Distributed Data Parallel (DDP)** training over multiple GPUs.
+
+- **Frozen Components**:
+  - Do not update weights for the VAE encoder/decoder and CLIP image encoder during training.
+
+#### **9. Testing and Validation**
+
+- **Qualitative Evaluation**:
+  - **Arbitrary Character Control**:
+    - Test with different character images (realistic, cartoon, personified).
+    - Ensure the model preserves body shapes and identity.
+  - **Novel 3D Motion Control**:
+    - Use pose sequences from datasets like **AMASS** or **Mixamo**.
+    - Evaluate the model's ability to handle complex and out-of-distribution motions.
+  - **Interactive Scene Control**:
+    - Insert characters into real-world scenes with occlusions.
+    - Assess naturalness and consistency of interactions.
+
+- **Quantitative Evaluation**:
+  - Compute metrics like **FID** (Fréchet Inception Distance) to evaluate visual quality.
+  - Use **SSIM** (Structural Similarity Index Measure) for structural consistency.
+
+#### **10. Refinement and Optimization**
+
+- **Hyperparameter Tuning**:
+  - Experiment with different learning rates, batch sizes, and loss weights.
+  - Adjust the capacity of encoders and decoders as needed.
+
+- **Model Enhancements**:
+  - Incorporate latest advancements in diffusion models.
+  - Explore better pose estimation and depth estimation models.
+
+- **Debugging and Error Handling**:
+  - Monitor training losses and outputs for anomalies.
+  - Use visualization tools to inspect intermediate results.
+
+#### **11. Documentation and Code Organization**
+
+- **Code Structure**:
+  - **Modules**:
+    - `data_preparation/`: Scripts for data processing and augmentation.
+    - `models/`: Definitions of encoders, decoders, and other network components.
+    - `training/`: Training loops, loss functions, and optimization routines.
+    - `utils/`: Utility functions for logging, visualization, and checkpointing.
+
+- **Comments and Docstrings**:
+  - Write clear comments explaining the purpose of functions and classes.
+  - Use docstrings to detail input parameters and return values.
+
+- **README and Usage Instructions**:
+  - Provide a comprehensive README with:
+    - Setup instructions.
+    - Environment dependencies.
+    - How to run training and inference scripts.
+    - Example commands.
+
+#### **12. Reproducibility and Sharing**
+
+- **Version Control**:
+  - Use **Git** for tracking changes.
+  - Maintain a repository (e.g., on GitHub or GitLab).
+
+- **Environment Management**:
+  - Use **conda** or **virtualenv** to manage dependencies.
+  - Provide an `environment.yml` or `requirements.txt` file.
+
+- **Random Seeds**:
+  - Set seeds for all libraries (NumPy, PyTorch) to ensure reproducibility.
+
+- **Model Checkpoints**:
+  - Save models at regular intervals.
+  - Provide pre-trained checkpoints if sharing the code.
+
+- **Licensing**:
+  - Choose an appropriate open-source license if releasing the code.
+
+---
+
+By following this recipe, you will develop a codebase that faithfully implements the MIMO framework, enabling you to reproduce the results presented in the paper and potentially extend the work further. This structured approach ensures that all aspects of the implementation are carefully considered and executed.
+
+**Note**: Always ensure that you have the rights and permissions to use datasets and models, especially when using pre-trained components or proprietary data.

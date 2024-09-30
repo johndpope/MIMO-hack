@@ -107,15 +107,24 @@ def test_motion_encoder(data_dir, cam_ids_to_use):
     print(f"Loaded SMPLX parameters shapes: betas={betas.shape}, poses={poses.shape}, trans={trans.shape}")
 
     print("Preparing camera parameters...")
-    
-    
-    print("Preparing camera parameters...")
     camera_params = []
     for cam_id in cam_ids_to_use:
         cam_ssn = cam_ssn_list[cam_id]
-        R = torch.tensor(cam_data[cam_ssn]['R'], dtype=torch.float32).flatten()
-        T = torch.tensor(cam_data[cam_ssn]['T'], dtype=torch.float32)
-        camera_params.append(torch.cat([R, T]))
+        cam_info = cam_data[cam_ssn]
+        R = torch.tensor(cam_info['R'], dtype=torch.float32).flatten()
+        T = torch.tensor(cam_info['T'], dtype=torch.float32)
+        
+        # Extract intrinsics from 'K' matrix
+        K = cam_info['K']
+        fx = torch.tensor([K[0]], dtype=torch.float32)
+        fy = torch.tensor([K[4]], dtype=torch.float32)
+        cx = torch.tensor([K[2]], dtype=torch.float32)
+        cy = torch.tensor([K[5]], dtype=torch.float32)
+    
+    # Concatenate all parameters
+    cam_params = torch.cat([R, T, fx, fy, cx, cy])
+    camera_params.append(cam_params)
+
     camera_params = torch.stack(camera_params)
     print(f"Initial camera parameters shape: {camera_params.shape}")
     print(f"Initial camera parameters first few values: {camera_params[:5, :5]}")
@@ -176,5 +185,5 @@ def test_motion_encoder(data_dir, cam_ids_to_use):
 
 if __name__ == "__main__":
     data_dir = '/media/oem/12TB/meshavatar/avatarrex_zzr'
-    cam_ids_to_use = [0]
+    cam_ids_to_use = [0,1,2,3,4,5,6,8,9,10,11,12,14,15]
     test_motion_encoder(data_dir, cam_ids_to_use)

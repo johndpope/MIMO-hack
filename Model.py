@@ -29,6 +29,8 @@ from diffusers.models.unets.unet_3d_blocks import (
 from diffusers import DDIMScheduler,DDPMScheduler
 from MimoDataset import MIMODataset
 import nvdiffrast.torch as dr
+# In DifferentiableRasterizer.forward
+import matplotlib.pyplot as plt
 
 import os
 os.environ['PYTORCH_CUDA_ALLOC_CONF'] = 'expandable_segments:True'
@@ -70,6 +72,15 @@ class DifferentiableRasterizer(nn.Module):
         self.ctx = dr.RasterizeGLContext()
         
     def forward(self, vertices, faces, vertex_colors):
+        projected_vertices_np = vertices_proj.detach().cpu().numpy()[0]
+        plt.scatter(projected_vertices_np[:, 0], projected_vertices_np[:, 1], s=1)
+        plt.title('Projected Vertices')
+        plt.xlim(-1, 1)
+        plt.ylim(-1, 1)
+        plt.savefig('projected_vertices.png')
+        plt.close()
+        print("Saved projected vertices visualization.")
+
         print(f"Faces shape: {faces.shape}, dtype: {faces.dtype}")
         assert faces.dim() == 2 and faces.shape[1] == 3, f"Expected faces to be 2D tensor with 3 columns, got shape {faces.shape}"
         assert faces.dtype == torch.int64, f"Expected faces to be of dtype torch.int64, got {faces.dtype}"
@@ -442,30 +453,30 @@ class StructuredMotionEncoder(nn.Module):
         
         batch_size = vertices.shape[0]
         
-        # Check if camera_params is empty
-        if camera_params.numel() == 0:
-            raise ValueError("camera_params is empty. Please ensure camera parameters are properly passed.")
-        
-        # Ensure tensors are contiguous
-        camera_params = camera_params.contiguous()
-        vertices = vertices.contiguous()
-        
-        # Reshape camera parameters
-        try:
-            R = camera_params[:, :9].reshape(batch_size, 3, 3)
-            T = camera_params[:, 9:12].reshape(batch_size, 3, 1)
-        except RuntimeError as e:
-            print(f"Error reshaping camera parameters: {e}")
-            print(f"camera_params shape: {camera_params.shape}")
-            raise
+        # Extract camera parameters
+        R = camera_params[:, :9].reshape(batch_size, 3, 3)
+        T = camera_params[:, 9:12].reshape(batch_size, 3, 1)
+        # Assume intrinsics are provided: fx, fy, cx, cy
+        fx = camera_params[:, 12].unsqueeze(-1).unsqueeze(-1)
+        fy = camera_params[:, 13].unsqueeze(-1).unsqueeze(-1)
+        cx = camera_params[:, 14].unsqueeze(-1).unsqueeze(-1)
+        cy = camera_params[:, 15].unsqueeze(-1).unsqueeze(-1)
         
         print(f"R shape: {R.shape}, T shape: {T.shape}")
         
         # Apply rotation and translation
-        projected_vertices = torch.bmm(vertices, R.transpose(1, 2)) + T.transpose(1, 2)
+        vertices_cam = torch.bmm(vertices, R.transpose(1, 2)) + T.transpose(1, 2)
         
-        # Perspective division
-        projected_vertices = projected_vertices / (projected_vertices[:, :, 2:3] + 1e-7)  # Added small epsilon to avoid division by zero
+        # Perspective projection
+        x = vertices_cam[:, :, 0] / (vertices_cam[:, :, 2] + 1e-7)
+        y = vertices_cam[:, :, 1] / (vertices_cam[:, :, 2] + 1e-7)
+        
+        # Apply camera intrinsics
+        u = fx * x + cx
+        v = fy * y + cy
+        
+        # Stack to get projected vertices
+        projected_vertices = torch.stack((u, v, vertices_cam[:, :, 2]), dim=-1)
         
         print(f"projected_vertices shape: {projected_vertices.shape}")
         
